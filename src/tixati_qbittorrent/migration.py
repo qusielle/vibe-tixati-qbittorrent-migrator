@@ -65,10 +65,6 @@ def _text(value: Any, *, field: str) -> str:
     raise MigrationError(f"{field} must be a string")
 
 
-def _bytes(value: Any, *, field: str) -> bytes:
-    return _text(value, field=field).encode("utf-8")
-
-
 def _dict(value: Any, *, field: str) -> dict[bytes, BValue]:
     if not isinstance(value, dict):
         raise MigrationError(f"{field} must be a bencode dictionary")
@@ -498,7 +494,10 @@ def migrate(
     if content_layout not in {"Original", "Subfolder"}:
         raise MigrationError("content_layout must be Original or Subfolder")
     prepared = _prepare_specs(specs, now=timestamp)
-    destination.mkdir(parents=True, exist_ok=True)
+    try:
+        destination.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise MigrationError(f"cannot create output directory {destination}: {exc}") from exc
 
     planned_paths: list[Path] = []
     for item in prepared:

@@ -43,7 +43,7 @@ tixati-to-qbittorrent \
   --save-path /path/to/downloads
 ```
 
-The default is stopped/unpaused-safe output. qBittorrent should be closed while its profile is being populated. Back up any existing `BT_backup` directory first. The converter never overwrites existing files unless `--overwrite` is supplied, and individual files are replaced atomically.
+The default output is stopped/paused. qBittorrent should be closed while its profile is being populated. Back up any existing `BT_backup` directory first. The converter never overwrites existing files unless `--overwrite` is supplied, and individual files are replaced atomically.
 
 If the paths on the old machine differ from the new machine, rewrite them with a prefix map:
 
