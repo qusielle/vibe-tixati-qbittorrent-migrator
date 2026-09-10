@@ -36,6 +36,17 @@ def _generic_string(key: bytes, value: bytes) -> bytes:
     )
 
 
+def _generic_value(key: bytes, value_type: int, payload: bytes) -> bytes:
+    return (
+        struct.pack("<I", len(key) + 1)
+        + b"\x02"
+        + key
+        + struct.pack("<I", len(payload) + 1)
+        + bytes([value_type])
+        + payload
+    )
+
+
 def _fixture_core() -> bytes:
     pieces = bytes(range(40))
     # Deliberately keep a non-canonical key order.  The real profile contains
@@ -48,6 +59,21 @@ def _fixture_core() -> bytes:
     plaintext = b"".join(
         (
             _field(0x11003, 2, pieces),
+            _generic_value(
+                b"cattype",
+                3,
+                struct.pack("<I", 0),
+            )
+            + _generic_value(
+                b"dlloc",
+                12,
+                struct.pack("<I", 2)
+                + struct.pack("<I", 5)
+                + b"\x02home"
+                + struct.pack("<I", 8)
+                + b"\x02fixture",
+            )
+            + _generic_string(b"name", b"fixture-category"),
             _field(0x11009, 2, info_hash),
             _field(0x11006, 6, struct.pack("<Q", 1_590_000_000)),
             _field(0x11007, 2, b"fixture comment"),
@@ -93,6 +119,7 @@ def test_core_decrypts_and_reconstructs_torrent(tmp_path: Path) -> None:
     assert transfer.comment == b"fixture comment"
     assert transfer.created_by == b"fixture creator"
     assert transfer.category == "fixture-category"
+    assert transfer.category_path == "/home/fixture"
     assert transfer.total_downloaded == 1_500
     assert transfer.total_uploaded == 2_500
     assert transfer.downloaded_payload == 1_400
@@ -128,5 +155,6 @@ def test_migrate_uses_core_when_no_torrent_source_is_given(tmp_path: Path) -> No
     assert resume[b"paused"] == 1
     assert resume[b"added_time"] == 1_600_000_123
     assert resume[b"qBt-category"] == b"fixture-category"
+    assert resume[b"save_path"] == b"/home/fixture"
     assert resume[b"total_downloaded"] == 1_500
     assert resume[b"total_uploaded"] == 2_500

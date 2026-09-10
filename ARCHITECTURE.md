@@ -34,8 +34,10 @@ The reader has four deliberate stages:
 3. `extract_core()` pairs `0x11027` prefixes with `0x11003` piece-hash blobs.
    The `pieces<N>:` suffix gives the required blob length, but the final
    association is always accepted only when `SHA1(prefix + pieces + suffix)`
-   matches a `0x11009` info hash. It also reads the `0x1103f` type-6 field in
-   the same transfer region as the original Created/Added Unix timestamp.
+   matches a `0x11009` info hash. It also reads transfer metadata, counters,
+   the `0x1103f` Created/Added timestamp, and the packed `0x1400a` piece state
+   from the same transfer region. Global category maps are scanned separately
+   so `d_category` can be paired with its `dlloc` path.
 4. `CoreTransfer.torrent_bytes` wraps the verified raw info dictionary in a
    root torrent dictionary. It embeds `info_bytes` directly rather than using
    `encode(info)`, because bencode key order is part of the info hash.
@@ -62,11 +64,13 @@ written to a temporary file in the target directory, flushed and fsynced, then
 replaced with `os.replace()`.
 
 The generated resume state is intentionally conservative. Tixati's private
-piece-completion and path fields are not assumed to be portable. Unless a
-manifest supplies trusted state, qBittorrent receives zeroed piece flags and a
-paused transfer so it can recheck the data. The transfer timestamp is a
-separate exception: direct core migrations pass `CoreTransfer.created_time`
-through `TransferSpec.added_time` to qBittorrent's `added_time` field.
+piece-completion and path fields are interpreted only when their serialized
+shape is unambiguous. The aggregate piece bitmap is expanded into qBittorrent
+resume bytes, and a category `dlloc` becomes the default save path. Explicit
+CLI paths and path maps still override those values. Transfers remain paused
+unless requested otherwise so qBittorrent can safely recheck the data. The
+transfer timestamp is passed through `TransferSpec.added_time` and is also
+applied to both generated file mtimes.
 
 ## Extending the project safely
 

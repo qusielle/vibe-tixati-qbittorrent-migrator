@@ -67,6 +67,7 @@ class CoreTransfer:
     comment: bytes | None = None
     created_by: bytes | None = None
     category: str | None = None
+    category_path: str | None = None
     total_downloaded: int = 0
     total_uploaded: int = 0
     downloaded_payload: int = 0
@@ -321,6 +322,17 @@ def _generic_string_value(
     transfer region; it does not attempt to interpret arbitrary nested maps.
     """
 
+    value = _generic_value(plaintext, start, end, key)
+    if value is None or value[0] != 2:
+        return None
+    return value[1]
+
+
+def _generic_value(
+    plaintext: bytes, start: int, end: int, key: bytes
+) -> tuple[int, bytes] | None:
+    """Read one generic-map value, retaining its private type number."""
+
     encoded_key = struct.pack("<I", len(key) + 1) + b"\x02" + key
     position = plaintext.find(encoded_key, start, end)
     if position < 0:
@@ -329,12 +341,105 @@ def _generic_string_value(
     if value_header + 5 > end:
         return None
     value_length = int.from_bytes(plaintext[value_header : value_header + 4], "little")
-    if value_length < 1 or plaintext[value_header + 4] != 2:
+    if value_length < 1:
         return None
     value_end = value_header + 4 + value_length
     if value_end > end:
         return None
-    return plaintext[value_header + 5 : value_end]
+    return plaintext[value_header + 4], plaintext[value_header + 5 : value_end]
+
+
+def _generic_map(plaintext: bytes, start: int, end: int) -> dict[bytes, tuple[int, bytes]]:
+    """Read consecutive key/value entries beginning at a generic-map key."""
+
+    entries: dict[bytes, tuple[int, bytes]] = {}
+    position = start
+    while position < end:
+        if position + 5 > end:
+            break
+        key_length = int.from_bytes(plaintext[position : position + 4], "little")
+        if key_length < 1 or plaintext[position + 4] != 2:
+            break
+        key_end = position + 4 + key_length
+        if key_end > end:
+            break
+        key = plaintext[position + 5 : key_end]
+        value_header = key_end
+        if value_header + 5 > end:
+            break
+        value_length = int.from_bytes(
+            plaintext[value_header : value_header + 4], "little"
+        )
+        if value_length < 1:
+            break
+        value_end = value_header + 4 + value_length
+        if value_end > end:
+            break
+        entries[key] = (
+            plaintext[value_header + 4],
+            plaintext[value_header + 5 : value_end],
+        )
+        position = value_end
+    return entries
+
+
+def _type12_path(payload: bytes) -> str | None:
+    """Decode the path-list payload used by category ``dlloc`` values."""
+
+    if len(payload) < 4:
+        return None
+    component_count = int.from_bytes(payload[:4], "little")
+    position = 4
+    components: list[str] = []
+    for _ in range(component_count):
+        if position + 5 > len(payload):
+            return None
+        length = int.from_bytes(payload[position : position + 4], "little")
+        if length < 1 or payload[position + 4] != 2:
+            return None
+        value_end = position + 4 + length
+        if value_end > len(payload):
+            return None
+        value = payload[position + 5 : value_end]
+        try:
+            components.append(value.decode("utf-8"))
+        except UnicodeDecodeError:
+            return None
+        position = value_end
+    if position != len(payload) or not components:
+        return None
+    return "/" + "/".join(components)
+
+
+def _category_locations(plaintext: bytes) -> dict[str, str]:
+    """Find Tixati category download locations from global category maps."""
+
+    key = b"cattype"
+    marker = struct.pack("<I", len(key) + 1) + b"\x02" + key
+    locations: dict[str, str] = {}
+    position = 0
+    while True:
+        position = plaintext.find(marker, position)
+        if position < 0:
+            break
+        entries = _generic_map(plaintext, position, len(plaintext))
+        name_entry = entries.get(b"name")
+        location_entry = entries.get(b"dlloc")
+        if (
+            name_entry is not None
+            and name_entry[0] == 2
+            and location_entry is not None
+            and location_entry[0] == 12
+        ):
+            try:
+                name = name_entry[1].decode("utf-8")
+            except UnicodeDecodeError:
+                name = ""
+            path = _type12_path(location_entry[1])
+            if name and path:
+                locations[name] = path
+        position += len(marker)
+    return locations
 
 
 def extract_core(
@@ -347,8 +452,12 @@ def extract_core(
     if progress is not None:
         progress("scanning serialized transfer fields")
     fields = _scan_fields(plaintext)
+    category_locations = _category_locations(plaintext)
     if progress is not None:
-        progress(f"found {len(fields)} relevant fields")
+        progress(
+            f"found {len(fields)} relevant fields and "
+            f"{len(category_locations)} category locations"
+        )
     hash_fields = [
         field
         for field in fields
@@ -480,6 +589,9 @@ def extract_core(
                     )
                 except UnicodeDecodeError:
                     category = category_value.decode("utf-8", "replace")
+                category_path = (
+                    category_locations.get(category) if category is not None else None
+                )
                 downloaded = _region_integer(
                     fields, hash_field.position, next_hash, 0x14040
                 )
@@ -512,6 +624,7 @@ def extract_core(
                     comment=comment,
                     created_by=created_by,
                     category=category,
+                    category_path=category_path,
                     total_downloaded=downloaded or 0,
                     total_uploaded=uploaded or 0,
                     downloaded_payload=downloaded_payload or 0,

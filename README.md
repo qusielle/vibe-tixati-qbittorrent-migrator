@@ -22,6 +22,8 @@ qBittorrent verifies existing data before downloading or seeding.
 - Preserves tracker URLs and torrent-level creation metadata found in transfer
   records.
 - Carries over Tixati per-transfer categories to qBittorrent categories.
+- Uses a Tixati category's download location as the default save path when no
+  explicit save path is supplied.
 - Sets each generated `.torrent` and `.fastresume` mtime to its
   qBittorrent `added_time`.
 - Supports exported `.torrent` files and JSON manifests as alternate inputs.
@@ -208,8 +210,10 @@ the date in tools that inspect file metadata rather than bencode.
   private field and therefore use the migration time unless the manifest
   supplies `added_time`.
 - Tixati categories are copied when present. Download paths and other UI state
-  are not assumed to have a stable meaning in the private fields; supply
-  `--save-path`, `--path-map`, or a manifest as appropriate.
+  are copied when their category definition supplies a location. Because that
+  location may belong to another machine, use `--save-path` or `--path-map`
+  when migrating between systems; a manifest remains available for per-torrent
+  overrides.
 - Hash-only/link records without embedded piece metadata are reported and
   skipped rather than turned into unverifiable torrents.
 - v2-only `.torrent` files are rejected by the exported-metadata path because
