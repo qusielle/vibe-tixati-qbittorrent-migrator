@@ -15,6 +15,8 @@ CLI / Python API
                               └─> CoreTransfer
 
 all inputs ──> _Torrent ──> _Prepared ──> conflict check ──> atomic writes
+                                                               │
+                                               profile/BT_backup + profile/qBittorrent.conf
 ```
 
 `migration.py` owns qBittorrent output semantics. `tixati_core.py` owns only
@@ -71,6 +73,11 @@ CLI paths and path maps still override those values. Transfers remain paused
 unless requested otherwise so qBittorrent can safely recheck the data. The
 transfer timestamp is passed through `TransferSpec.added_time` and is also
 applied to both generated file mtimes.
+
+The public `output_dir` argument is always the qBittorrent profile root. The
+writer creates `output_dir/BT_backup` for transfer pairs and, when requested,
+`output_dir/qBittorrent.conf`; it does not interpret the argument as an
+already-created `BT_backup` directory.
 
 ## Extending the project safely
 

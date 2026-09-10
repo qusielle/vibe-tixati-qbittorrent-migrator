@@ -35,7 +35,7 @@ class TransferSpec:
 
 @dataclass(frozen=True)
 class MigrationReport:
-    """Files produced by one migration run and records that were skipped."""
+    """Profile root populated by one migration run and skipped records."""
 
     torrent_count: int
     fastresume_count: int

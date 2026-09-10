@@ -141,12 +141,14 @@ def test_migrate_uses_core_when_no_torrent_source_is_given(tmp_path: Path) -> No
     tixati = tmp_path / "tixati"
     tixati.mkdir()
     (tixati / "core2.dat").write_bytes(_fixture_core())
-    destination = tmp_path / "BT_backup"
+    profile = tmp_path / "profile"
 
-    report = migrate(tixati, destination, now=1_700_000_000)
+    report = migrate(tixati, profile, now=1_700_000_000)
 
     assert report.torrent_count == 1
     assert report.skipped_count == 1
+    assert report.output_dir == profile
+    destination = profile / "BT_backup"
     stem = next(path.stem for path in destination.glob("*.torrent"))
     resume = decode((destination / f"{stem}.fastresume").read_bytes())
     assert isinstance(resume, dict)

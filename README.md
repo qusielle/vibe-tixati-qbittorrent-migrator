@@ -3,16 +3,17 @@
 A small, dependency-light Python tool for reconstructing qBittorrent
 `BT_backup` entries from Tixati transfer metadata.
 
-For each reconstructable transfer, it writes:
+For each reconstructable transfer, it writes inside the supplied profile
+directory:
 
 ```text
-<info-hash>.torrent
-<info-hash>.fastresume
+BT_backup/<info-hash>.torrent
+BT_backup/<info-hash>.fastresume
 ```
 
 Tracker URLs are retained when present. Generated resume data is deliberately
-conservative: transfers are paused and all pieces are marked unchecked, so
-qBittorrent verifies existing data before downloading or seeding.
+conservative: transfers are paused, and piece state is imported only when the
+source bitmap validates; otherwise qBittorrent receives unchecked pieces.
 
 ## Features
 
@@ -277,10 +278,11 @@ or package installation. From the directory containing the checkout:
 tixati-qbittorrent-migrator/.venv/bin/python \
   -m tixati-qbittorrent-migrator \
   /path/to/tixati \
-  /path/to/qBittorrent/profile/BT_backup \
+  /path/to/qBittorrent/profile \
   --save-path /srv/downloads
 ```
 
+The second argument is the qBittorrent profile root, not `BT_backup` itself.
 The default output is paused. qBittorrent should be closed while its profile
 is being populated, and existing `BT_backup` files are never overwritten
 unless `--overwrite` is supplied.
@@ -290,12 +292,13 @@ unless `--overwrite` is supplied.
 After installation, these forms are equivalent:
 
 ```bash
-tixati-to-qbittorrent /path/to/tixati /path/to/profile/BT_backup
-python -m tixati_qbittorrent /path/to/tixati /path/to/profile/BT_backup
+tixati-to-qbittorrent /path/to/tixati /path/to/profile
+python -m tixati_qbittorrent /path/to/tixati /path/to/profile
 ```
 
-Use `--write-settings` to create a minimal `qBittorrent.conf` beside
-`BT_backup`. If paths differ between systems, rewrite a prefix:
+Use `--write-settings` to create a minimal `qBittorrent.conf` directly inside
+the profile root, beside `BT_backup`. If paths differ between systems, rewrite
+a prefix:
 
 ```bash
 --path-map 'C:\\Downloads=/srv/downloads'
@@ -309,7 +312,7 @@ metadata. The converter also accepts v1/v2 hybrid torrents.
 
 ```bash
 python -m tixati_qbittorrent \
-  /path/to/tixati /path/to/profile/BT_backup \
+  /path/to/tixati /path/to/profile \
   --torrent-source /path/to/exported-torrents \
   --save-path /srv/downloads
 ```
@@ -349,7 +352,7 @@ from tixati_qbittorrent import migrate
 
 report = migrate(
     "/path/to/tixati",
-    "/path/to/qBittorrent/profile/BT_backup",
+    "/path/to/qBittorrent/profile",
     save_path="/srv/downloads",
     write_settings=True,
 )

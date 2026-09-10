@@ -54,11 +54,12 @@ def test_migrate_recursive_torrents_and_fastresume(tmp_path: Path) -> None:
     torrent_source.mkdir(parents=True)
     (tixati / "core2.dat").write_bytes(b"\x02\x00\x00\x00")
     info_hash = _write_torrent(torrent_source / "human-name.torrent")
-    destination = tmp_path / "profile" / "BT_backup"
+    profile = tmp_path / "profile"
+    destination = profile / "BT_backup"
 
     report = migrate(
         tixati,
-        destination,
+        profile,
         torrent_source=torrent_source.parent,
         save_path="/srv/downloads",
         category="migrated",
@@ -109,11 +110,12 @@ def test_manifest_supports_path_mapping_and_known_state(tmp_path: Path) -> None:
         ),
         encoding="utf-8",
     )
-    destination = tmp_path / "BT_backup"
+    profile = tmp_path / "profile"
+    destination = profile / "BT_backup"
 
     migrate(
         tixati,
-        destination,
+        profile,
         manifest=manifest,
         path_maps=[(r"C:\Downloads", "/srv/downloads")],
         now=1_700_000_000,
@@ -135,7 +137,7 @@ def test_missing_torrent_metadata_is_actionable(tmp_path: Path) -> None:
     tixati.mkdir()
     (tixati / "core2.dat").write_bytes(b"\x02\x00\x00\x00")
     with pytest.raises(MigrationError, match=r"Share > Save \.torrent"):
-        migrate(tixati, tmp_path / "BT_backup")
+        migrate(tixati, tmp_path / "profile")
 
 
 def test_optional_settings_are_written_next_to_backup(tmp_path: Path) -> None:
@@ -144,18 +146,21 @@ def test_optional_settings_are_written_next_to_backup(tmp_path: Path) -> None:
     source = tmp_path / "torrents"
     source.mkdir()
     _write_torrent(source / "one.torrent")
-    destination = tmp_path / "profile" / "BT_backup"
+    profile = tmp_path / "profile"
+    destination = profile / "BT_backup"
 
     report = migrate(
         tixati,
-        destination,
+        profile,
         torrent_source=source,
         save_path="/srv/downloads",
         write_settings=True,
         listen_port=45678,
     )
 
-    assert report.settings_path == destination.parent / "qBittorrent.conf"
+    assert report.settings_path == profile / "qBittorrent.conf"
+    assert not list(profile.glob("*.torrent"))
+    assert not list(profile.glob("*.fastresume"))
     settings = report.settings_path.read_text(encoding="utf-8")
     assert "Downloads\\SavePath=/srv/downloads" in settings
     assert "BitTorrent\\Session\\Port=45678" in settings

@@ -539,7 +539,11 @@ def migrate(
     now: int | None = None,
     progress: Callable[[str], None] | None = None,
 ) -> MigrationReport:
-    """Convert torrent metadata into a qBittorrent ``BT_backup`` directory.
+    """Populate a qBittorrent profile directory from torrent metadata.
+
+    ``output_dir`` is the profile root.  Generated transfer files always go
+    under its ``BT_backup`` child; default settings go directly in the profile
+    root beside that directory.
 
     The Tixati directory is inspected for context and for recursively stored
     ``.torrent`` files.  When no explicit ``torrent_source`` or manifest is
@@ -550,7 +554,8 @@ def migrate(
     """
 
     source_dir = Path(tixati_dir).expanduser().resolve()
-    destination = Path(output_dir).expanduser().resolve()
+    profile_dir = Path(output_dir).expanduser().resolve()
+    destination = profile_dir / "BT_backup"
     if not source_dir.is_dir():
         raise MigrationError(f"Tixati source is not a directory: {source_dir}")
     path_map_tuple = tuple(path_maps)
@@ -681,7 +686,7 @@ def migrate(
         planned_paths.append(
             Path(settings_path).expanduser().resolve()
             if settings_path is not None
-            else destination.parent / "qBittorrent.conf"
+            else profile_dir / "qBittorrent.conf"
         )
     if not overwrite:
         conflicts = [path for path in planned_paths if path.exists()]
@@ -715,7 +720,7 @@ def migrate(
         generated_settings = (
             Path(settings_path).expanduser().resolve()
             if settings_path is not None
-            else destination.parent / "qBittorrent.conf"
+            else profile_dir / "qBittorrent.conf"
         )
         if generated_settings.exists() and not overwrite:
             raise MigrationError(f"refusing to overwrite existing file {generated_settings}")
@@ -734,7 +739,7 @@ def migrate(
     return MigrationReport(
         torrent_count=len(prepared),
         fastresume_count=len(prepared),
-        output_dir=destination,
+        output_dir=profile_dir,
         settings_path=generated_settings,
         skipped_count=len(skipped_info_hashes),
         skipped_info_hashes=skipped_info_hashes,

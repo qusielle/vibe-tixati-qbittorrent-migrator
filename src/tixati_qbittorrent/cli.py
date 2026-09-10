@@ -34,7 +34,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "output_dir",
         type=Path,
-        help="qBittorrent BT_backup directory to create or populate",
+        help="qBittorrent profile directory; BT_backup is created inside it",
     )
     parser.add_argument(
         "--torrent-source",
@@ -83,7 +83,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--write-settings",
         action="store_true",
-        help="also write qBittorrent.conf next to output_dir",
+        help="also write qBittorrent.conf inside output_dir",
     )
     parser.add_argument(
         "--settings-path",
