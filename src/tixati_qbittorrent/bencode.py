@@ -102,6 +102,72 @@ class _Parser:
             result[key] = self.parse()
 
 
+def _value_end(data: bytes, start: int) -> int:
+    """Return the end offset of one bencoded value without re-encoding it."""
+
+    if start >= len(data):
+        raise BencodeError("unexpected end of input")
+    token = data[start]
+    if token == ord("i"):
+        end = data.find(b"e", start + 1)
+        if end < 0:
+            raise BencodeError("unterminated integer")
+        return end + 1
+    if token in (ord("l"), ord("d")):
+        position = start + 1
+        while True:
+            if position >= len(data):
+                raise BencodeError("unterminated container")
+            if data[position] == ord("e"):
+                return position + 1
+            if token == ord("d"):
+                position = _value_end(data, position)
+            position = _value_end(data, position)
+    if 48 <= token <= 57:
+        colon = data.find(b":", start)
+        if colon < 0:
+            raise BencodeError("missing byte-string separator")
+        try:
+            length = int(data[start:colon])
+        except ValueError as exc:
+            raise BencodeError("invalid byte-string length") from exc
+        end = colon + 1 + length
+        if length < 0 or end > len(data):
+            raise BencodeError("byte-string extends past end of input")
+        return end
+    raise BencodeError(f"invalid token {chr(token)!r} at offset {start}")
+
+
+def raw_dict_value(data: bytes, key: bytes) -> bytes:
+    """Return one dictionary value exactly as encoded in ``data``.
+
+    This is needed for torrent info hashes: bencode dictionary key order and
+    integer/string spelling are part of the hashed byte sequence, so decoding
+    and canonical re-encoding the value is not equivalent.
+    """
+
+    if not data or data[0] != ord("d"):
+        raise BencodeError("root value is not a dictionary")
+    position = 1
+    while True:
+        if position >= len(data):
+            raise BencodeError("unterminated dictionary")
+        if data[position] == ord("e"):
+            raise BencodeError(f"missing dictionary key {key!r}")
+        key_end = _value_end(data, position)
+        try:
+            decoded_key = decode(data[position:key_end])
+        except BencodeError:
+            raise
+        if not isinstance(decoded_key, bytes):
+            raise BencodeError("dictionary key is not a byte string")
+        value_start = key_end
+        value_end = _value_end(data, value_start)
+        if decoded_key == key:
+            return data[value_start:value_end]
+        position = value_end
+
+
 def decode(data: bytes) -> BValue:
     """Decode exactly one bencoded value."""
 
@@ -132,4 +198,3 @@ def encode(value: BValue) -> bytes:
         parts.append(b"e")
         return b"".join(parts)
     raise TypeError(f"unsupported bencode value {type(value).__name__}")
-

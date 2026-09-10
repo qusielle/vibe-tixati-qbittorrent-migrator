@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .bencode import BValue, BencodeError, decode, encode
+from .bencode import BValue, BencodeError, decode, encode, raw_dict_value
 from .config import render_qbittorrent_conf
 from .model import MigrationReport, TransferSpec
 from .tixati_core import (
@@ -117,11 +117,17 @@ def _parse_torrent(
     if file_count < 1:
         raise MigrationError(f"{path} contains no files")
 
-    info_hash = (
-        expected_info_hash
-        if expected_info_hash is not None
-        else hashlib.sha1(encode(info)).digest()
-    )
+    try:
+        raw_info = raw_dict_value(raw, b"info")
+    except BencodeError as exc:
+        raise MigrationError(f"cannot locate raw info dictionary in {path}: {exc}") from exc
+    actual_info_hash = hashlib.sha1(raw_info).digest()
+    if expected_info_hash is not None and actual_info_hash != expected_info_hash:
+        raise MigrationError(
+            f"{path} info hash mismatch: expected {expected_info_hash.hex()}, "
+            f"got {actual_info_hash.hex()}"
+        )
+    info_hash = expected_info_hash or actual_info_hash
     return _Torrent(
         source_path=path,
         raw=raw,

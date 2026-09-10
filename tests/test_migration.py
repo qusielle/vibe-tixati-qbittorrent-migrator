@@ -47,6 +47,32 @@ def test_bencode_round_trip_and_canonical_order() -> None:
         decode(b"i01e")
 
 
+def test_noncanonical_torrent_uses_raw_info_hash(tmp_path: Path) -> None:
+    tixati = tmp_path / "tixati"
+    torrents = tmp_path / "torrents"
+    tixati.mkdir()
+    torrents.mkdir()
+    (tixati / "core2.dat").write_bytes(b"\x02\x00\x00\x00")
+    info = (
+        b"d4:name8:test.bin6:lengthi7e12:piece lengthi4e6:pieces40:"
+        + b"a" * 40
+        + b"e"
+    )
+    raw_torrent = b"d4:info" + info + b"e"
+    torrent_path = torrents / "noncanonical.torrent"
+    torrent_path.write_bytes(raw_torrent)
+    expected_hash = sha1(info).hexdigest()
+
+    migrate(tixati, tmp_path / "profile", torrent_source=torrents, now=1_700_000_000)
+
+    assert (tmp_path / "profile" / "BT_backup" / f"{expected_hash}.torrent").read_bytes() == raw_torrent
+    resume = decode(
+        (tmp_path / "profile" / "BT_backup" / f"{expected_hash}.fastresume").read_bytes()
+    )
+    assert isinstance(resume, dict)
+    assert resume[b"info-hash"].hex() == expected_hash
+
+
 def test_migrate_recursive_torrents_and_fastresume(tmp_path: Path) -> None:
     tixati = tmp_path / "tixati"
     torrent_source = tmp_path / "exported" / "nested"
