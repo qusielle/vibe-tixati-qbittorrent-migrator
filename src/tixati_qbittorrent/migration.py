@@ -1,0 +1,556 @@
+"""Build a qBittorrent ``BT_backup`` directory from torrent metadata."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import tempfile
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Iterable
+
+from .bencode import BValue, BencodeError, decode, encode
+from .config import write_qbittorrent_conf
+from .model import MigrationReport, TransferSpec
+
+
+DEFAULT_LIBTORRENT_VERSION = "1.2.19.0"
+_TIXATI_DATA_FILES = {
+    "core2.dat",
+    "settings2.dat",
+    "uisettings2.dat",
+    "autothrottle2.dat",
+    "bwpresets2.dat",
+    "channels2.dat",
+    "colors2.dat",
+    "dht2.dat",
+    "ipfilters2.dat",
+    "rss2.dat",
+    "scheduler2.dat",
+}
+
+
+class MigrationError(RuntimeError):
+    """Raised when the source is incomplete or cannot be converted safely."""
+
+
+@dataclass(frozen=True)
+class _Torrent:
+    source_path: Path
+    raw: bytes
+    root: dict[bytes, BValue]
+    info: dict[bytes, BValue]
+    info_hash: bytes
+    piece_count: int
+    file_count: int
+
+
+@dataclass(frozen=True)
+class _Prepared:
+    torrent: _Torrent
+    spec: TransferSpec
+    fastresume: bytes
+
+
+def _text(value: Any, *, field: str) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, bytes):
+        try:
+            return value.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise MigrationError(f"{field} is not valid UTF-8") from exc
+    raise MigrationError(f"{field} must be a string")
+
+
+def _bytes(value: Any, *, field: str) -> bytes:
+    return _text(value, field=field).encode("utf-8")
+
+
+def _dict(value: Any, *, field: str) -> dict[bytes, BValue]:
+    if not isinstance(value, dict):
+        raise MigrationError(f"{field} must be a bencode dictionary")
+    return value
+
+
+def _load_torrent(path: Path) -> _Torrent:
+    try:
+        raw = path.read_bytes()
+        root_value = decode(raw)
+    except (OSError, BencodeError) as exc:
+        raise MigrationError(f"cannot read torrent {path}: {exc}") from exc
+    root = _dict(root_value, field=f"{path} root")
+    info = _dict(root.get(b"info"), field=f"{path} info")
+
+    pieces = info.get(b"pieces")
+    if not isinstance(pieces, bytes):
+        raise MigrationError(
+            f"{path} is v2-only or has no v1 piece hashes; "
+            "this converter currently requires a v1-compatible .torrent"
+        )
+    if len(pieces) == 0 or len(pieces) % 20:
+        raise MigrationError(f"{path} has an invalid v1 pieces field")
+
+    if isinstance(info.get(b"files"), list):
+        file_count = len(info[b"files"])
+    else:
+        file_count = 1
+    if file_count < 1:
+        raise MigrationError(f"{path} contains no files")
+
+    info_hash = hashlib.sha1(encode(info)).digest()
+    return _Torrent(
+        source_path=path,
+        raw=raw,
+        root=root,
+        info=info,
+        info_hash=info_hash,
+        piece_count=len(pieces) // 20,
+        file_count=file_count,
+    )
+
+
+def _tracker_tiers(root: dict[bytes, BValue]) -> list[list[bytes]]:
+    announce_list = root.get(b"announce-list")
+    if isinstance(announce_list, list):
+        tiers: list[list[bytes]] = []
+        for tier in announce_list:
+            if isinstance(tier, list):
+                urls = [url for url in tier if isinstance(url, bytes)]
+                if urls:
+                    tiers.append(urls)
+        if tiers:
+            return tiers
+    announce = root.get(b"announce")
+    if isinstance(announce, bytes):
+        return [[announce]]
+    return []
+
+
+def _url_list(root: dict[bytes, BValue]) -> list[bytes]:
+    urls = root.get(b"url-list")
+    if isinstance(urls, bytes):
+        return [urls]
+    if isinstance(urls, list):
+        return [url for url in urls if isinstance(url, bytes)]
+    return []
+
+
+def _apply_path_maps(path: str, path_maps: Iterable[tuple[str, str]]) -> str:
+    if not path:
+        return path
+    normalized = path.replace("\\", "/")
+    for old, new in path_maps:
+        old_normalized = old.replace("\\", "/").rstrip("/")
+        if not old_normalized:
+            continue
+        if normalized == old_normalized or normalized.startswith(old_normalized + "/"):
+            suffix = normalized[len(old_normalized) :]
+            return new.rstrip("/") + suffix
+    return path
+
+
+def _validate_piece_state(state: tuple[int, ...] | None, count: int) -> bytes:
+    if state is None:
+        return b"\x00" * count
+    if len(state) != count:
+        raise MigrationError(
+            f"piece_state has {len(state)} entries, expected {count}"
+        )
+    if any(piece not in (0, 1) for piece in state):
+        raise MigrationError("piece_state entries must be 0 or 1")
+    return bytes(state)
+
+
+def _make_fastresume(
+    torrent: _Torrent,
+    spec: TransferSpec,
+    *,
+    now: int,
+) -> bytes:
+    if spec.file_priority is None:
+        file_priority = [1] * torrent.file_count
+    else:
+        if len(spec.file_priority) != torrent.file_count:
+            raise MigrationError(
+                f"file_priority has {len(spec.file_priority)} entries for "
+                f"{torrent.file_count} torrent files ({torrent.source_path})"
+            )
+        if any(priority not in (0, 1, 2, 3, 4) for priority in spec.file_priority):
+            raise MigrationError("file_priority entries must be between 0 and 4")
+        file_priority = list(spec.file_priority)
+
+    pieces = _validate_piece_state(spec.piece_state, torrent.piece_count)
+    complete = bool(pieces) and all(piece == 1 for piece in pieces)
+    save_path = _apply_path_maps(spec.save_path, ())
+    download_path = _apply_path_maps(spec.download_path, ())
+    private = torrent.info.get(b"private") == 1
+
+    resume: dict[bytes, BValue] = {
+        b"active_time": 0,
+        b"added_time": now,
+        b"allocation": b"sparse",
+        b"apply_ip_filter": 1,
+        b"auto_managed": 0 if spec.paused else 1,
+        b"completed_time": now if complete else 0,
+        b"disable_dht": 1 if private else 0,
+        b"disable_lsd": 1 if private else 0,
+        b"disable_pex": 1 if private else 0,
+        b"download_rate_limit": -1,
+        b"file-format": b"libtorrent resume file",
+        b"file-version": 1,
+        b"file_priority": file_priority,
+        b"finished_time": 0,
+        b"httpseeds": [],
+        b"info-hash": torrent.info_hash,
+        b"last_download": 0,
+        b"last_seen_complete": now if complete else 0,
+        b"last_upload": 0,
+        b"libtorrent-version": DEFAULT_LIBTORRENT_VERSION.encode("ascii"),
+        b"max_connections": 16777215,
+        b"max_uploads": 16777215,
+        b"num_complete": 0,
+        b"num_downloaded": 0,
+        b"num_incomplete": 0,
+        b"paused": 1 if spec.paused else 0,
+        b"piece_priority": b"\x01" * torrent.piece_count,
+        b"pieces": pieces,
+        b"qBt-category": spec.category.encode("utf-8"),
+        b"qBt-contentLayout": spec.content_layout.encode("utf-8"),
+        b"qBt-downloadPath": download_path.encode("utf-8"),
+        b"qBt-firstLastPiecePriority": 0,
+        b"qBt-inactiveSeedingTimeLimit": -2,
+        b"qBt-name": b"",
+        b"qBt-ratioLimit": -2000,
+        b"qBt-savePath": save_path.encode("utf-8"),
+        b"qBt-seedStatus": 1 if complete else 0,
+        b"qBt-seedingTimeLimit": -2,
+        b"qBt-stopCondition": b"None",
+        b"qBt-tags": [tag.encode("utf-8") for tag in spec.tags],
+        b"save_path": save_path.encode("utf-8"),
+        b"seed_mode": 0,
+        b"seeding_time": 0,
+        b"sequential_download": 0,
+        b"share_mode": 0,
+        b"stop_when_ready": 0,
+        b"super_seeding": 0,
+        b"total_downloaded": 0,
+        b"total_uploaded": 0,
+        b"trackers": _tracker_tiers(torrent.root),
+        b"upload_mode": 0,
+        b"upload_rate_limit": -1,
+        b"url-list": _url_list(torrent.root),
+    }
+    return encode(resume)
+
+
+def _parse_tags(value: Any, *, field: str) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+        raise MigrationError(f"{field} must be a list of strings")
+    return tuple(value)
+
+
+def _parse_int_tuple(value: Any, *, field: str) -> tuple[int, ...] | None:
+    if value is None:
+        return None
+    if not isinstance(value, list) or any(
+        not isinstance(item, int) or isinstance(item, bool) for item in value
+    ):
+        raise MigrationError(f"{field} must be a list of integers")
+    return tuple(value)
+
+
+def _manifest_specs(
+    manifest_path: Path,
+    data: Any,
+    *,
+    cli_save_path: str | None,
+    cli_category: str,
+    cli_tags: tuple[str, ...],
+    cli_paused: bool,
+    cli_content_layout: str,
+    path_maps: Iterable[tuple[str, str]],
+) -> list[TransferSpec]:
+    if not isinstance(data, dict):
+        raise MigrationError("manifest must contain a JSON object")
+    defaults = data.get("defaults", {})
+    if not isinstance(defaults, dict):
+        raise MigrationError("manifest defaults must be an object")
+    entries = data.get("torrents")
+    if not isinstance(entries, list) or not entries:
+        raise MigrationError("manifest torrents must be a non-empty list")
+
+    specs: list[TransferSpec] = []
+    for index, entry in enumerate(entries, start=1):
+        if not isinstance(entry, dict):
+            raise MigrationError(f"manifest torrent #{index} must be an object")
+        torrent_value = entry.get("torrent")
+        if not isinstance(torrent_value, str):
+            raise MigrationError(f"manifest torrent #{index} needs a torrent path")
+        torrent_path = Path(torrent_value)
+        if not torrent_path.is_absolute():
+            torrent_path = (manifest_path.parent / torrent_path).resolve()
+
+        def setting(name: str, default: Any = None) -> Any:
+            return entry[name] if name in entry else defaults.get(name, default)
+
+        save_path = cli_save_path if cli_save_path is not None else setting("save_path", "")
+        category = setting("category", cli_category)
+        tags = setting("tags", list(cli_tags))
+        paused = setting("paused", cli_paused)
+        content_layout = setting("content_layout", cli_content_layout)
+        download_path = setting("download_path", "")
+        if not isinstance(save_path, str) or not isinstance(download_path, str):
+            raise MigrationError(f"manifest torrent #{index} paths must be strings")
+        if not isinstance(category, str) or not isinstance(content_layout, str):
+            raise MigrationError(f"manifest torrent #{index} category/layout must be strings")
+        if not isinstance(paused, bool):
+            raise MigrationError(f"manifest torrent #{index} paused must be boolean")
+        specs.append(
+            TransferSpec(
+                torrent_path=torrent_path,
+                save_path=_apply_path_maps(save_path, path_maps),
+                download_path=_apply_path_maps(download_path, path_maps),
+                category=category,
+                tags=_parse_tags(tags, field=f"manifest torrent #{index} tags"),
+                paused=paused,
+                content_layout=content_layout,
+                file_priority=_parse_int_tuple(
+                    setting("file_priority"),
+                    field=f"manifest torrent #{index} file_priority",
+                ),
+                piece_state=_parse_int_tuple(
+                    setting("piece_state"),
+                    field=f"manifest torrent #{index} piece_state",
+                ),
+            )
+        )
+    return specs
+
+
+def _default_specs(
+    torrent_source: Path,
+    *,
+    save_path: str | None,
+    category: str,
+    tags: tuple[str, ...],
+    paused: bool,
+    content_layout: str,
+    path_maps: Iterable[tuple[str, str]],
+) -> list[TransferSpec]:
+    paths = sorted(
+        (path for path in torrent_source.rglob("*") if path.is_file() and path.suffix.lower() == ".torrent"),
+        key=lambda path: str(path).casefold(),
+    )
+    if not paths:
+        available = sorted(
+            path.name for path in torrent_source.iterdir() if path.is_file()
+        )
+        tixati_files = sorted(name for name in available if name in _TIXATI_DATA_FILES)
+        hint = (
+            " The directory contains Tixati's proprietary core2.dat, but no "
+            ".torrent metadata. Select all transfers in Tixati and use "
+            "Share > Save .torrent, then pass that directory with "
+            "--torrent-source."
+            if "core2.dat" in tixati_files
+            else ""
+        )
+        raise MigrationError(
+            f"no .torrent files found under {torrent_source}.{hint}"
+        )
+    return [
+        TransferSpec(
+            torrent_path=path,
+            save_path=_apply_path_maps(save_path or "", path_maps),
+            category=category,
+            tags=tags,
+            paused=paused,
+            content_layout=content_layout,
+        )
+        for path in paths
+    ]
+
+
+def _atomic_write(path: Path, data: bytes, *, overwrite: bool) -> None:
+    if path.exists() and not overwrite:
+        raise MigrationError(f"refusing to overwrite existing file {path}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            dir=path.parent,
+            delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    except OSError as exc:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+        raise MigrationError(f"cannot write {path}: {exc}") from exc
+
+
+def _prepare_specs(
+    specs: list[TransferSpec],
+    *,
+    now: int,
+) -> list[_Prepared]:
+    prepared: list[_Prepared] = []
+    seen: dict[str, Path] = {}
+    for spec in specs:
+        torrent = _load_torrent(spec.torrent_path)
+        info_hash_hex = torrent.info_hash.hex()
+        if info_hash_hex in seen:
+            raise MigrationError(
+                f"duplicate info hash {info_hash_hex} in {seen[info_hash_hex]} "
+                f"and {spec.torrent_path}"
+            )
+        seen[info_hash_hex] = spec.torrent_path
+        prepared.append(
+            _Prepared(
+                torrent=torrent,
+                spec=spec,
+                fastresume=_make_fastresume(torrent, spec, now=now),
+            )
+        )
+    return prepared
+
+
+def migrate(
+    tixati_dir: str | Path,
+    output_dir: str | Path,
+    *,
+    torrent_source: str | Path | None = None,
+    manifest: str | Path | None = None,
+    save_path: str | None = None,
+    category: str = "",
+    tags: Iterable[str] = (),
+    paused: bool = True,
+    content_layout: str = "Original",
+    path_maps: Iterable[tuple[str, str]] = (),
+    overwrite: bool = False,
+    write_settings: bool = False,
+    settings_path: str | Path | None = None,
+    incomplete_path: str = "",
+    listen_port: int | None = None,
+    now: int | None = None,
+) -> MigrationReport:
+    """Convert torrent metadata into a qBittorrent ``BT_backup`` directory.
+
+    The Tixati directory is inspected for context and for recursively stored
+    ``.torrent`` files.  Tixati's ``core2.dat`` is intentionally not parsed:
+    it is a proprietary binary database and does not expose a stable public
+    format.  Use ``torrent_source`` or a JSON ``manifest`` when the metadata
+    was exported to another directory.
+    """
+
+    source_dir = Path(tixati_dir).expanduser().resolve()
+    destination = Path(output_dir).expanduser().resolve()
+    if not source_dir.is_dir():
+        raise MigrationError(f"Tixati source is not a directory: {source_dir}")
+    path_map_tuple = tuple(path_maps)
+    tag_tuple = tuple(tags)
+
+    if manifest is not None:
+        manifest_path = Path(manifest).expanduser().resolve()
+        try:
+            data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise MigrationError(f"cannot read manifest {manifest_path}: {exc}") from exc
+        specs = _manifest_specs(
+            manifest_path,
+            data,
+            cli_save_path=save_path,
+            cli_category=category,
+            cli_tags=tag_tuple,
+            cli_paused=paused,
+            cli_content_layout=content_layout,
+            path_maps=path_map_tuple,
+        )
+    else:
+        source = (
+            Path(torrent_source).expanduser().resolve()
+            if torrent_source is not None
+            else source_dir
+        )
+        if not source.is_dir():
+            raise MigrationError(f"torrent source is not a directory: {source}")
+        specs = _default_specs(
+            source,
+            save_path=save_path,
+            category=category,
+            tags=tag_tuple,
+            paused=paused,
+            content_layout=content_layout,
+            path_maps=path_map_tuple,
+        )
+
+    timestamp = int(time.time()) if now is None else now
+    prepared = _prepare_specs(specs, now=timestamp)
+    destination.mkdir(parents=True, exist_ok=True)
+
+    planned_paths: list[Path] = []
+    for item in prepared:
+        stem = item.torrent.info_hash.hex()
+        planned_paths.extend(
+            (destination / f"{stem}.torrent", destination / f"{stem}.fastresume")
+        )
+    if write_settings:
+        planned_paths.append(
+            Path(settings_path).expanduser().resolve()
+            if settings_path is not None
+            else destination.parent / "qBittorrent.conf"
+        )
+    if not overwrite:
+        conflicts = [path for path in planned_paths if path.exists()]
+        if conflicts:
+            listed = ", ".join(str(path) for path in conflicts[:3])
+            suffix = "..." if len(conflicts) > 3 else ""
+            raise MigrationError(f"output contains existing files: {listed}{suffix}")
+
+    for item in prepared:
+        stem = item.torrent.info_hash.hex()
+        _atomic_write(
+            destination / f"{stem}.torrent",
+            item.torrent.raw,
+            overwrite=overwrite,
+        )
+        _atomic_write(
+            destination / f"{stem}.fastresume",
+            item.fastresume,
+            overwrite=overwrite,
+        )
+
+    generated_settings: Path | None = None
+    if write_settings:
+        generated_settings = (
+            Path(settings_path).expanduser().resolve()
+            if settings_path is not None
+            else destination.parent / "qBittorrent.conf"
+        )
+        if generated_settings.exists() and not overwrite:
+            raise MigrationError(f"refusing to overwrite existing file {generated_settings}")
+        generated_settings.parent.mkdir(parents=True, exist_ok=True)
+        write_qbittorrent_conf(
+            generated_settings,
+            save_path=save_path or "",
+            incomplete_path=incomplete_path,
+            listen_port=listen_port,
+        )
+
+    return MigrationReport(
+        torrent_count=len(prepared),
+        fastresume_count=len(prepared),
+        output_dir=destination,
+        settings_path=generated_settings,
+    )
+
