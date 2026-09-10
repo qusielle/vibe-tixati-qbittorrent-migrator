@@ -83,7 +83,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--write-settings",
         action="store_true",
-        help="also write qBittorrent.conf inside output_dir",
+        help="also write qBittorrent.conf, importing compatible Tixati settings",
     )
     parser.add_argument(
         "--settings-path",

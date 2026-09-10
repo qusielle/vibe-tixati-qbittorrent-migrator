@@ -9,6 +9,12 @@ from .tixati_core import (
     CoreTransfer,
     extract_core_file,
 )
+from .tixati_settings import (
+    SettingsFormatError,
+    TixatiSetting,
+    TixatiSettings,
+    read_settings,
+)
 
 __all__ = [
     "CoreExtraction",
@@ -19,5 +25,9 @@ __all__ = [
     "MigrationError",
     "MigrationReport",
     "extract_core_file",
+    "SettingsFormatError",
+    "TixatiSetting",
+    "TixatiSettings",
+    "read_settings",
     "migrate",
 ]

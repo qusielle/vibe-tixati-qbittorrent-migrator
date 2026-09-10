@@ -30,7 +30,9 @@ source bitmap validates; otherwise qBittorrent receives unchecked pieces.
 - Sets each generated `.torrent` and `.fastresume` mtime to its
   qBittorrent `added_time`.
 - Supports exported `.torrent` files and JSON manifests as alternate inputs.
-- Emits atomic output files and an optional minimal `qBittorrent.conf`.
+- Reverse-engineers `settings2.dat` and carries over compatible global
+  settings when `--write-settings` is enabled.
+- Emits atomic output files and an optional `qBittorrent.conf`.
 - Provides a checkout launcher, console script, and importable Python API.
 
 ## Reverse-engineered `core2.dat` format
@@ -255,6 +257,64 @@ or a manifest-supplied `added_time`. Both generated files receive the same
 Unix-second value as their filesystem modification time, which also preserves
 the date in tools that inspect file metadata rather than bencode.
 
+## Reverse-engineered `settings2.dat` format
+
+`settings2.dat` uses the same outer envelope as `core2.dat`, but a different
+stream key:
+
+```text
+uint32-le version       = 2
+bytes   encrypted_body
+bytes   sha1_digest      = SHA1(decrypted_body), exactly 20 bytes
+```
+
+The decrypted body is one type-11 registry value. Its first four bytes are
+the registry value length, followed by the type byte and an entry count. Each
+entry has a typed key and a typed value:
+
+```text
+<key-length:u32-le>      # includes key type and key payload
+<key-type:u8>            # 0x02 = UTF-8 name, 0x04 = numeric field id
+<key-payload>
+<value-length:u32-le>    # includes value type and value payload
+<value-type:u8>
+<value-payload>
+```
+
+For example, the named `incport` setting with value `15363` is represented
+conceptually as:
+
+```text
+08 00 00 00 02 69 6e 63 70 6f 72 74
+05 00 00 00 03 03 3c 00 00
+```
+
+The first length is eight (`0x02` plus seven name bytes). The value type `0x03`
+is a four-byte little-endian integer; `03 3c 00 00` is `15363`. A type-12
+path value instead contains a component count followed by typed strings, so
+an absolute path is reconstructable without platform-specific string parsing:
+
+```text
+03 00 00 00                         # three components
+05 00 00 00 02 home
+07 00 00 00 02 kasumi
+0a 00 00 00 02 Downloads
+```
+
+The reader currently decodes integer types `0x03`–`0x06`, UTF-8 strings
+(`0x02`), and type-12 paths while retaining composite or unknown values as
+raw bytes. Numeric legacy entries are retained by ID rather than guessed into
+names. This makes the parser useful for future mappings without silently
+assigning a wrong meaning to an undocumented field.
+
+With `--write-settings`, compatible values are copied to the generated
+qBittorrent profile: the incoming port, default save path, port forwarding,
+DHT enablement, per-torrent connection limit, upload slots, and managed active
+download/upload limits. Explicit `--listen-port` and `--save-path` arguments
+take precedence. Tixati's multiple proxy scopes, encryption modes, protocol
+selection, disk throttles, and UI-only values have no sufficiently certain
+one-to-one qBittorrent mapping and are left unchanged.
+
 ## Limitations
 
 - Version-2 `core2.dat` is currently supported; newer formats may require new
@@ -331,8 +391,9 @@ python -m tixati_qbittorrent /path/to/tixati /path/to/profile
 ```
 
 Use `--write-settings` to create a minimal `qBittorrent.conf` directly inside
-the profile root, beside `BT_backup`. If paths differ between systems, rewrite
-a prefix:
+the profile root, beside `BT_backup`. When the source contains a valid
+`settings2.dat`, this also imports the compatible global settings described
+above. If paths differ between systems, rewrite a prefix:
 
 ```bash
 --path-map 'C:\\Downloads=/srv/downloads'

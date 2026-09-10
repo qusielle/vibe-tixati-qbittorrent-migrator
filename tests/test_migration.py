@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from hashlib import sha1
 from pathlib import Path
+import struct
 
 import pytest
 
 from tixati_qbittorrent.bencode import BencodeError, decode, encode
 from tixati_qbittorrent.migration import MigrationError, migrate
+from tixati_qbittorrent.tixati_core import _rc4
+from tixati_qbittorrent.tixati_settings import SETTINGS_KEY
 
 
 def _write_torrent(path: Path, *, multi_file: bool = False) -> bytes:
@@ -36,6 +40,34 @@ def _write_torrent(path: Path, *, multi_file: bool = False) -> bytes:
     raw = encode(root)
     path.write_bytes(raw)
     return sha1(encode(info)).digest()
+
+
+def _write_settings(path: Path) -> None:
+    def entry(name: str, value_type: int, payload: bytes) -> bytes:
+        key = name.encode("utf-8")
+        return (
+            struct.pack("<I", len(key) + 1)
+            + b"\x02"
+            + key
+            + struct.pack("<I", len(payload) + 1)
+            + bytes([value_type])
+            + payload
+        )
+
+    entries = b"".join(
+        (
+            entry("incport", 3, struct.pack("<I", 15363)),
+            entry("incpath", 12, b"\x02\x00\x00\x00\x05\x00\x00\x00\x02home"
+                  b"\x07\x00\x00\x00\x02kasumi"),
+        )
+    )
+    payload = struct.pack("<I", 2) + entries
+    plaintext = struct.pack("<IB", len(payload) + 1, 11) + payload
+    path.write_bytes(
+        b"\x02\x00\x00\x00"
+        + _rc4(plaintext, SETTINGS_KEY)
+        + hashlib.sha1(plaintext).digest()
+    )
 
 
 def test_bencode_round_trip_and_canonical_order() -> None:
@@ -223,4 +255,27 @@ def test_optional_settings_are_written_next_to_backup(tmp_path: Path) -> None:
     assert not list(profile.glob("*.fastresume"))
     settings = report.settings_path.read_text(encoding="utf-8")
     assert "Downloads\\SavePath=/srv/downloads" in settings
-    assert "BitTorrent\\Session\\Port=45678" in settings
+    assert "[BitTorrent]" in settings
+    assert "Session\\Port=45678" in settings
+
+
+def test_tixati_settings_are_imported_and_path_mapped(tmp_path: Path) -> None:
+    tixati = tmp_path / "tixati"
+    tixati.mkdir()
+    _write_settings(tixati / "settings2.dat")
+    source = tmp_path / "torrents"
+    source.mkdir()
+    _write_torrent(source / "one.torrent")
+
+    report = migrate(
+        tixati,
+        tmp_path / "profile",
+        torrent_source=source,
+        path_maps=[("/home/kasumi", "/srv")],
+        write_settings=True,
+    )
+
+    settings = report.settings_path.read_text(encoding="utf-8")
+    assert "Downloads\\SavePath=/srv" in settings
+    assert "Session\\DefaultSavePath=/srv" in settings
+    assert "Session\\Port=15363" in settings

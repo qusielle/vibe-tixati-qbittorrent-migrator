@@ -23,6 +23,7 @@ from .tixati_core import (
     Progress,
     extract_core_file,
 )
+from .tixati_settings import SettingsFormatError, TixatiSettings, read_settings
 
 
 DEFAULT_LIBTORRENT_VERSION = "1.2.19.0"
@@ -641,6 +642,17 @@ def migrate(
         raise MigrationError(f"Tixati source is not a directory: {source_dir}")
     path_map_tuple = tuple(path_maps)
     tag_tuple = tuple(tags)
+    source_settings: TixatiSettings | None = None
+    if write_settings:
+        settings_file = source_dir / "settings2.dat"
+        if settings_file.is_file():
+            try:
+                source_settings = read_settings(settings_file, progress=progress)
+            except (OSError, SettingsFormatError) as exc:
+                raise MigrationError(
+                    f"cannot reverse-engineer {settings_file}: {exc}"
+                ) from exc
+            _notify(progress, f"decoded {len(source_settings.entries)} Tixati settings")
 
     skipped_info_hashes: tuple[str, ...] = ()
     direct_core_extraction: CoreExtraction | None = None
@@ -816,15 +828,25 @@ def migrate(
             if settings_path is not None
             else profile_dir / "qBittorrent.conf"
         )
+        # Apply the same path rewrite to the global default that is applied to
+        # each resume record.  Without this, a migrated profile could have
+        # resume files pointing at the new machine while qBittorrent's global
+        # default still pointed at Tixati's old absolute path.
+        settings_save_path = _apply_path_maps(save_path or "", path_map_tuple)
+        if not settings_save_path and source_settings is not None:
+            settings_save_path = _apply_path_maps(
+                source_settings.path("incpath") or "", path_map_tuple
+            )
         if generated_settings.exists() and not overwrite:
             raise MigrationError(f"refusing to overwrite existing file {generated_settings}")
         generated_settings.parent.mkdir(parents=True, exist_ok=True)
         _atomic_write(
             generated_settings,
             render_qbittorrent_conf(
-                save_path=save_path or "",
+                save_path=settings_save_path,
                 incomplete_path=incomplete_path,
                 listen_port=listen_port,
+                tixati_settings=source_settings,
             ).encode("utf-8"),
             overwrite=overwrite,
         )

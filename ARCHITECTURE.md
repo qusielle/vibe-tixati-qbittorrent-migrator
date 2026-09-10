@@ -62,6 +62,23 @@ producing the same 3,253 transfers and 10 skipped hash-only records.
 without enough verified metadata must remain visible to the caller rather than
 become a guessed torrent.
 
+## `tixati_settings.py`
+
+`settings2.dat` uses the same version, encrypted-body, and SHA-1 envelope as
+`core2.dat`, but Tixati uses a separate stream key for it. After decryption,
+the body is a counted registry whose entries have typed string or numeric keys
+and typed values. `read_settings()` authenticates the complete file before
+parsing it into `TixatiSettings`; unknown value types and numeric legacy keys
+are retained instead of being assigned an invented meaning.
+
+The settings reader is deliberately independent of qBittorrent output. The
+configuration writer performs the reviewed mappings: Tixati's `incport`,
+`incpath`, `incportupnp`, DHT mode, connection limit, upload slots, and managed
+active-transfer limits become qBittorrent settings. Explicit CLI arguments
+override imported values. Settings import is opt-in through `--write-settings`,
+so a normal torrent migration never unexpectedly changes a qBittorrent
+profile's global preferences.
+
 ## `migration.py`
 
 `_Torrent` is the internal normalized representation. It contains both the
