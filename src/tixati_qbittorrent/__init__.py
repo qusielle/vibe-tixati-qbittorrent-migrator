@@ -1,6 +1,14 @@
-"""Convert exported Tixati torrent metadata into a qBittorrent profile."""
+"""Convert Tixati transfer metadata into a qBittorrent profile."""
 
 from .migration import MigrationError, MigrationReport, migrate
+from .tixati_core import CoreFormatError, CoreExtraction, CoreTransfer, extract_core_file
 
-__all__ = ["MigrationError", "MigrationReport", "migrate"]
-
+__all__ = [
+    "CoreExtraction",
+    "CoreFormatError",
+    "CoreTransfer",
+    "MigrationError",
+    "MigrationReport",
+    "extract_core_file",
+    "migrate",
+]

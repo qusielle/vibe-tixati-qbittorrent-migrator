@@ -21,8 +21,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="tixati-to-qbittorrent",
         description=(
-            "Create qBittorrent .torrent/.fastresume pairs from torrent "
-            "metadata exported from a Tixati profile."
+            "Create qBittorrent .torrent/.fastresume pairs from a Tixati "
+            "profile or exported torrent metadata."
         ),
     )
     parser.add_argument("tixati_dir", type=Path, help="Tixati config directory")
@@ -115,7 +115,12 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     print(f"wrote {report.torrent_count} torrent and {report.fastresume_count} fastresume files")
     print(f"output: {report.output_dir}")
+    if report.skipped_count:
+        print(
+            f"skipped {report.skipped_count} Tixati hash-only/link records "
+            "without reconstructable torrent piece metadata"
+        )
+        print("skipped info hashes: " + ", ".join(report.skipped_info_hashes))
     if report.settings_path is not None:
         print(f"settings: {report.settings_path}")
     return 0
-

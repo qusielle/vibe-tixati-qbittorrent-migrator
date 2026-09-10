@@ -14,6 +14,12 @@ from typing import Any, Iterable
 from .bencode import BValue, BencodeError, decode, encode
 from .config import render_qbittorrent_conf
 from .model import MigrationReport, TransferSpec
+from .tixati_core import (
+    CoreExtraction,
+    CoreFormatError,
+    CoreTransfer,
+    extract_core_file,
+)
 
 
 DEFAULT_LIBTORRENT_VERSION = "1.2.19.0"
@@ -71,11 +77,15 @@ def _dict(value: Any, *, field: str) -> dict[bytes, BValue]:
     return value
 
 
-def _load_torrent(path: Path) -> _Torrent:
+def _parse_torrent(
+    path: Path,
+    raw: bytes,
+    *,
+    expected_info_hash: bytes | None = None,
+) -> _Torrent:
     try:
-        raw = path.read_bytes()
         root_value = decode(raw)
-    except (OSError, BencodeError) as exc:
+    except BencodeError as exc:
         raise MigrationError(f"cannot read torrent {path}: {exc}") from exc
     root = _dict(root_value, field=f"{path} root")
     info = _dict(root.get(b"info"), field=f"{path} info")
@@ -96,7 +106,11 @@ def _load_torrent(path: Path) -> _Torrent:
     if file_count < 1:
         raise MigrationError(f"{path} contains no files")
 
-    info_hash = hashlib.sha1(encode(info)).digest()
+    info_hash = (
+        expected_info_hash
+        if expected_info_hash is not None
+        else hashlib.sha1(encode(info)).digest()
+    )
     return _Torrent(
         source_path=path,
         raw=raw,
@@ -105,6 +119,28 @@ def _load_torrent(path: Path) -> _Torrent:
         info_hash=info_hash,
         piece_count=len(pieces) // 20,
         file_count=file_count,
+    )
+
+
+def _load_torrent(path: Path) -> _Torrent:
+    try:
+        raw = path.read_bytes()
+    except OSError as exc:
+        raise MigrationError(f"cannot read torrent {path}: {exc}") from exc
+    return _parse_torrent(path, raw)
+
+
+def _core_torrent(item: CoreTransfer) -> _Torrent:
+    """Turn one reverse-engineered core record into qB torrent metadata."""
+
+    # Kept as a small adapter instead of teaching the bencode writer about
+    # Tixati's private structures.
+    source_text = item.torrent_path or "core2.dat"
+    source_path = Path(source_text)
+    return _parse_torrent(
+        source_path,
+        item.torrent_bytes,
+        expected_info_hash=item.info_hash,
     )
 
 
@@ -400,10 +436,20 @@ def _prepare_specs(
     *,
     now: int,
 ) -> list[_Prepared]:
+    return _prepare_pairs(
+        ((_load_torrent(spec.torrent_path), spec) for spec in specs),
+        now=now,
+    )
+
+
+def _prepare_pairs(
+    pairs: Iterable[tuple[_Torrent, TransferSpec]],
+    *,
+    now: int,
+) -> list[_Prepared]:
     prepared: list[_Prepared] = []
     seen: dict[str, Path] = {}
-    for spec in specs:
-        torrent = _load_torrent(spec.torrent_path)
+    for torrent, spec in pairs:
         info_hash_hex = torrent.info_hash.hex()
         if info_hash_hex in seen:
             raise MigrationError(
@@ -443,10 +489,10 @@ def migrate(
     """Convert torrent metadata into a qBittorrent ``BT_backup`` directory.
 
     The Tixati directory is inspected for context and for recursively stored
-    ``.torrent`` files.  Tixati's ``core2.dat`` is intentionally not parsed:
-    it is a proprietary binary database and does not expose a stable public
-    format.  Use ``torrent_source`` or a JSON ``manifest`` when the metadata
-    was exported to another directory.
+    ``.torrent`` files.  When no explicit ``torrent_source`` or manifest is
+    supplied, a version-2 ``core2.dat`` is reverse-engineered directly.  The
+    converter reconstructs the embedded bencoded torrent info dictionaries;
+    it does not attempt to guess Tixati's private piece-completion state.
     """
 
     source_dir = Path(tixati_dir).expanduser().resolve()
@@ -456,6 +502,9 @@ def migrate(
     path_map_tuple = tuple(path_maps)
     tag_tuple = tuple(tags)
 
+    skipped_info_hashes: tuple[str, ...] = ()
+    direct_core_extraction: CoreExtraction | None = None
+    core_pairs: list[tuple[_Torrent, TransferSpec]] | None = None
     if manifest is not None:
         manifest_path = Path(manifest).expanduser().resolve()
         try:
@@ -472,6 +521,46 @@ def migrate(
             cli_content_layout=content_layout,
             path_maps=path_map_tuple,
         )
+    elif torrent_source is None and (source_dir / "core2.dat").is_file():
+        core_path = source_dir / "core2.dat"
+        try:
+            # Very small placeholder files are useful in tests and should fall
+            # through to the normal exported-torrent error below.
+            if core_path.stat().st_size >= 24:
+                direct_core_extraction = extract_core_file(core_path)
+        except (OSError, CoreFormatError) as exc:
+            raise MigrationError(f"cannot reverse-engineer {core_path}: {exc}") from exc
+        if direct_core_extraction is not None and direct_core_extraction.transfers:
+            skipped_info_hashes = tuple(
+                value.hex() for value in direct_core_extraction.skipped_info_hashes
+            )
+            core_pairs = []
+            for item in direct_core_extraction.transfers:
+                torrent = _core_torrent(item)
+                core_pairs.append(
+                    (
+                        torrent,
+                        TransferSpec(
+                            torrent_path=torrent.source_path,
+                            save_path=_apply_path_maps(save_path or "", path_map_tuple),
+                            category=category,
+                            tags=tag_tuple,
+                            paused=paused,
+                            content_layout=content_layout,
+                        ),
+                    )
+                )
+            direct_core_extraction = None
+        else:
+            specs = _default_specs(
+                source_dir,
+                save_path=save_path,
+                category=category,
+                tags=tag_tuple,
+                paused=paused,
+                content_layout=content_layout,
+                path_maps=path_map_tuple,
+            )
     else:
         source = (
             Path(torrent_source).expanduser().resolve()
@@ -493,7 +582,11 @@ def migrate(
     timestamp = int(time.time()) if now is None else now
     if content_layout not in {"Original", "Subfolder"}:
         raise MigrationError("content_layout must be Original or Subfolder")
-    prepared = _prepare_specs(specs, now=timestamp)
+    prepared = (
+        _prepare_pairs(core_pairs, now=timestamp)
+        if core_pairs is not None
+        else _prepare_specs(specs, now=timestamp)
+    )
     try:
         destination.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
@@ -556,4 +649,6 @@ def migrate(
         fastresume_count=len(prepared),
         output_dir=destination,
         settings_path=generated_settings,
+        skipped_count=len(skipped_info_hashes),
+        skipped_info_hashes=skipped_info_hashes,
     )

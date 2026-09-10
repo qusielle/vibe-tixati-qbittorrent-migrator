@@ -28,10 +28,11 @@ class TransferSpec:
 
 @dataclass(frozen=True)
 class MigrationReport:
-    """Files produced by one migration run."""
+    """Files produced by one migration run and records that were skipped."""
 
     torrent_count: int
     fastresume_count: int
     output_dir: Path
     settings_path: Path | None = None
-
+    skipped_count: int = 0
+    skipped_info_hashes: tuple[str, ...] = ()
