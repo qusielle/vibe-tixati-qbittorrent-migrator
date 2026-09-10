@@ -36,6 +36,7 @@ def _fixture_core() -> bytes:
         (
             _field(0x11003, 2, pieces),
             _field(0x11009, 2, info_hash),
+            _field(0x1103F, 6, struct.pack("<Q", 1_600_000_123)),
             _field(0x1101E, 2, b"/old/fixture.torrent"),
             _field(0x11027, 2, prefix),
             _field(0x11028, 2, suffix),
@@ -63,6 +64,7 @@ def test_core_decrypts_and_reconstructs_torrent(tmp_path: Path) -> None:
     assert extraction.skipped_info_hashes == (b"x" * 20,)
     transfer = extraction.transfers[0]
     assert transfer.info_hash == hashlib.sha1(transfer.info_bytes).digest()
+    assert transfer.created_time == 1_600_000_123
     root = decode(transfer.torrent_bytes)
     assert isinstance(root, dict)
     assert root[b"info"] == transfer.info
@@ -86,3 +88,4 @@ def test_migrate_uses_core_when_no_torrent_source_is_given(tmp_path: Path) -> No
     assert resume[b"info-hash"].hex() == stem
     assert resume[b"pieces"] == b"\x00\x00"
     assert resume[b"paused"] == 1
+    assert resume[b"added_time"] == 1_600_000_123

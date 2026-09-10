@@ -34,7 +34,8 @@ The reader has four deliberate stages:
 3. `extract_core()` pairs `0x11027` prefixes with `0x11003` piece-hash blobs.
    The `pieces<N>:` suffix gives the required blob length, but the final
    association is always accepted only when `SHA1(prefix + pieces + suffix)`
-   matches a `0x11009` info hash.
+   matches a `0x11009` info hash. It also reads the `0x1103f` type-6 field in
+   the same transfer region as the original Created/Added Unix timestamp.
 4. `CoreTransfer.torrent_bytes` wraps the verified raw info dictionary in a
    root torrent dictionary. It embeds `info_bytes` directly rather than using
    `encode(info)`, because bencode key order is part of the info hash.
@@ -63,7 +64,9 @@ replaced with `os.replace()`.
 The generated resume state is intentionally conservative. Tixati's private
 piece-completion and path fields are not assumed to be portable. Unless a
 manifest supplies trusted state, qBittorrent receives zeroed piece flags and a
-paused transfer so it can recheck the data.
+paused transfer so it can recheck the data. The transfer timestamp is a
+separate exception: direct core migrations pass `CoreTransfer.created_time`
+through `TransferSpec.added_time` to qBittorrent's `added_time` field.
 
 ## Extending the project safely
 

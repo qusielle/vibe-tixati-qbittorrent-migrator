@@ -77,6 +77,7 @@ Important transfer fields include:
 | `0x1101e` | original metadata path or a hash-link label |
 | `0x11027` | bencoded info-dictionary prefix |
 | `0x11028` | bencoded info-dictionary suffix |
+| `0x1103f` | per-transfer Created/Added timestamp, type 6 `uint64` Unix seconds |
 | `0x12001` | tracker URL |
 
 Unknown fields are ignored. This is intentional: the file contains many
@@ -124,12 +125,40 @@ file. This matters because bencode dictionary key order is part of the hashed
 byte sequence: decoding and re-encoding a non-canonical dictionary could
 silently change its info hash.
 
+### Transfer dates
+
+Tixati keeps the transfer's Created/Added date in the parent transfer record,
+not in the bencoded torrent metadata. In observed version-2 profiles it is the
+`0x1103f` field: a type-6 field with an eight-byte little-endian Unix timestamp.
+For example, the payload below represents `2020-09-13 12:15:23 UTC`:
+
+```text
+05 00 00 00 04        field preamble
+3f 10 01 00           field ID 0x1103f
+09 00 00 00           9 bytes: one type byte plus 8 payload bytes
+06                    unsigned 64-bit integer
+5b 0d 5e 5f 00 00 00 00
+```
+
+The migrator copies that value to qBittorrent's `added_time` key in the
+`.fastresume` file. The neighboring date-like fields occur later or are
+missing in some records and behave like activity/completion bookkeeping, so
+they are not used as the added date. This mapping is based on repeated field
+behavior across real profiles rather than an official Tixati schema. When
+using exported `.torrent` files without a matching core record, the source
+does not contain this private date; the migrator then uses the migration time,
+or a manifest-supplied `added_time`.
+
 ## Limitations
 
 - Version-2 `core2.dat` is currently supported; newer formats may require new
   field mappings or encryption details.
 - Tixati's piece-completion state is not converted. All generated resume
   pieces are zeroed so qBittorrent performs a real check.
+- Direct `core2.dat` migrations preserve the Tixati Created/Added timestamp as
+  qBittorrent's `added_time`. Standalone exported `.torrent` files have no such
+  private field and therefore use the migration time unless the manifest
+  supplies `added_time`.
 - Download paths, categories, and other UI state are not assumed to have a
   stable meaning in the private fields. Supply `--save-path`, `--path-map`, or
   a manifest as appropriate.
@@ -211,8 +240,8 @@ python -m tixati_qbittorrent \
 
 ### Per-torrent manifest
 
-Use a JSON manifest for different save paths, categories, tags, priorities, or
-trusted piece states:
+Use a JSON manifest for different save paths, categories, tags, priorities,
+trusted piece states, or explicit Unix timestamps:
 
 ```json
 {
@@ -227,7 +256,8 @@ trusted piece states:
       "save_path": "/srv/downloads/music",
       "tags": ["migrated"],
       "file_priority": [1, 1, 0],
-      "piece_state": [1, 0, 1, 1]
+      "piece_state": [1, 0, 1, 1],
+      "added_time": 1700000000
     }
   ]
 }

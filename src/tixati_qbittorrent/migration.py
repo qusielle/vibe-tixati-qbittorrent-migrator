@@ -233,10 +233,14 @@ def _make_fastresume(
     save_path = _apply_path_maps(spec.save_path, ())
     download_path = _apply_path_maps(spec.download_path, ())
     private = torrent.info.get(b"private") == 1
+    # Direct core2.dat migrations provide Tixati's original Created/Added
+    # timestamp. Exported .torrent files and manifests normally do not, so
+    # their established behavior remains to use the migration timestamp.
+    added_time = spec.added_time if spec.added_time is not None else now
 
     resume: dict[bytes, BValue] = {
         b"active_time": 0,
-        b"added_time": now,
+        b"added_time": added_time,
         b"allocation": b"sparse",
         b"apply_ip_filter": 1,
         b"auto_managed": 0 if spec.paused else 1,
@@ -310,6 +314,14 @@ def _parse_int_tuple(value: Any, *, field: str) -> tuple[int, ...] | None:
     return tuple(value)
 
 
+def _parse_timestamp(value: Any, *, field: str) -> int | None:
+    if value is None:
+        return None
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise MigrationError(f"{field} must be a non-negative integer")
+    return value
+
+
 def _manifest_specs(
     manifest_path: Path,
     data: Any,
@@ -372,6 +384,10 @@ def _manifest_specs(
                 piece_state=_parse_int_tuple(
                     setting("piece_state"),
                     field=f"manifest torrent #{index} piece_state",
+                ),
+                added_time=_parse_timestamp(
+                    setting("added_time"),
+                    field=f"manifest torrent #{index} added_time",
                 ),
             )
         )
@@ -580,6 +596,7 @@ def migrate(
                             tags=tag_tuple,
                             paused=paused,
                             content_layout=content_layout,
+                            added_time=item.created_time,
                         ),
                     )
                 )

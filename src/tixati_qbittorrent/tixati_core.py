@@ -57,6 +57,11 @@ class CoreTransfer:
     info_bytes: bytes  # Keep raw bytes: re-encoding can change a noncanonical hash.
     torrent_path: str  # Diagnostic source path or Tixati hash-link label.
     trackers: tuple[bytes, ...]  # URLs found in this transfer's field region.
+    created_time: int | None = None
+    # Tixati stores this as field 0x1103f: an eight-byte little-endian Unix
+    # timestamp. It occurs once in every observed transfer record and remains
+    # stable while later activity timestamps change, which identifies it as
+    # the value shown by Tixati's Created/Added column.
 
     @property
     def torrent_bytes(self) -> bytes:
@@ -156,7 +161,15 @@ def _scan_fields(plaintext: bytes) -> list[CoreField]:
     metadata avoids having to guess the meaning of every private field.
     """
 
-    wanted = {0x11003, 0x11009, 0x1101E, 0x11027, 0x11028, 0x12001}
+    wanted = {
+        0x11003,
+        0x11009,
+        0x1101E,
+        0x11027,
+        0x11028,
+        0x1103F,
+        0x12001,
+    }
     fields: list[CoreField] = []
     position = 0
     while True:
@@ -201,6 +214,22 @@ def _region(fields: list[CoreField], start: int, end: int, field_id: int) -> lis
     left = bisect.bisect_left(positions, start)
     right = bisect.bisect_left(positions, end)
     return [field for field in fields[left:right] if field.field_id == field_id]
+
+
+def _created_time(fields: list[CoreField], start: int, end: int) -> int | None:
+    """Read Tixati's per-transfer Created/Added timestamp, if present.
+
+    This is intentionally a narrow interpretation. The surrounding core
+    object contains several other date-like fields, but 0x1103f is the one
+    observed exactly once per transfer, including transfers that have no
+    activity/completion timestamp. Its type is 6 and its payload is an
+    unsigned 64-bit Unix timestamp.
+    """
+
+    for field in _region(fields, start, end, 0x1103F):
+        if field.value_type == 6 and len(field.payload) == 8:
+            return int.from_bytes(field.payload, "little")
+    return None
 
 
 def extract_core(
@@ -318,12 +347,18 @@ def extract_core(
                     for field in tracker_fields
                     if b"://" in field.payload
                 )
+                created_time = _created_time(
+                    fields,
+                    hash_field.position,
+                    next_hash,
+                )
                 found[info_hash] = CoreTransfer(
                     info_hash=info_hash,
                     info=info_value,
                     info_bytes=info_bytes,
                     torrent_path=torrent_path,
                     trackers=trackers,
+                    created_time=created_time,
                 )
                 break
             candidate_index -= 1
@@ -339,8 +374,12 @@ def extract_core(
         if hash_field.payload not in found
     )
     if progress is not None:
+        created_count = sum(
+            transfer.created_time is not None for transfer in transfers
+        )
         progress(
             f"reconstructed {len(transfers)} transfers; "
+            f"{created_count} Created timestamps recovered; "
             f"{len(skipped)} records skipped"
         )
     return CoreExtraction(transfers=transfers, skipped_info_hashes=skipped)

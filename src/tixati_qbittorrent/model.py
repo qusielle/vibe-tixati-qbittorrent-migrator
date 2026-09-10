@@ -13,6 +13,8 @@ class TransferSpec:
     ``piece_state`` is optional and contains one 0/1 value per torrent piece.
     When absent, the generated resume data marks every piece as unchecked so
     qBittorrent will verify the existing files instead of trusting stale state.
+    ``added_time`` is an optional Unix timestamp used for qBittorrent's
+    original transfer-added date.
     """
 
     torrent_path: Path
@@ -24,6 +26,7 @@ class TransferSpec:
     content_layout: str = "Original"
     file_priority: tuple[int, ...] | None = None
     piece_state: tuple[int, ...] | None = None
+    added_time: int | None = None
 
 
 @dataclass(frozen=True)

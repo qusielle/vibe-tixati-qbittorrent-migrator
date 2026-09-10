@@ -80,6 +80,7 @@ def test_migrate_recursive_torrents_and_fastresume(tmp_path: Path) -> None:
     assert resume[b"paused"] == 1
     assert resume[b"pieces"] == b"\x00\x00"
     assert resume[b"file_priority"] == [1]
+    assert resume[b"added_time"] == 1_700_000_000
 
 
 def test_manifest_supports_path_mapping_and_known_state(tmp_path: Path) -> None:
@@ -97,6 +98,7 @@ def test_manifest_supports_path_mapping_and_known_state(tmp_path: Path) -> None:
                     {
                         "torrent": "metadata/source.torrent",
                         "save_path": r"C:\Downloads\Music",
+                        "added_time": 1_600_000_000,
                         "file_priority": [1, 0],
                         "piece_state": [1, 0],
                     }
@@ -120,6 +122,7 @@ def test_manifest_supports_path_mapping_and_known_state(tmp_path: Path) -> None:
     assert resume[b"save_path"] == b"/srv/downloads/Music"
     assert resume[b"file_priority"] == [1, 0]
     assert resume[b"pieces"] == b"\x01\x00"
+    assert resume[b"added_time"] == 1_600_000_000
     assert resume[b"qBt-seedStatus"] == 0
 
 
