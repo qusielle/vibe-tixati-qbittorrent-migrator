@@ -437,7 +437,13 @@ def _default_specs(
     ]
 
 
-def _atomic_write(path: Path, data: bytes, *, overwrite: bool) -> None:
+def _atomic_write(
+    path: Path,
+    data: bytes,
+    *,
+    overwrite: bool,
+    mtime: int | None = None,
+) -> None:
     # Write, flush, fsync, and rename in the destination directory. A partially
     # written resume file is worse than a failed migration because qBittorrent
     # may discover it on its next startup.
@@ -457,6 +463,12 @@ def _atomic_write(path: Path, data: bytes, *, overwrite: bool) -> None:
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
+            if mtime is not None:
+                # Set the timestamp on the temporary inode before replacing
+                # the destination, so readers never observe a newly-created
+                # output file with the wrong date.
+                os.utime(temporary, (mtime, mtime))
+                os.fsync(handle.fileno())
         os.replace(temporary, path)
     except OSError as exc:
         if temporary is not None:
@@ -673,15 +685,22 @@ def migrate(
 
     for item in prepared:
         stem = item.torrent.info_hash.hex()
+        output_mtime = (
+            item.spec.added_time
+            if item.spec.added_time is not None
+            else timestamp
+        )
         _atomic_write(
             destination / f"{stem}.torrent",
             item.torrent.raw,
             overwrite=overwrite,
+            mtime=output_mtime,
         )
         _atomic_write(
             destination / f"{stem}.fastresume",
             item.fastresume,
             overwrite=overwrite,
+            mtime=output_mtime,
         )
 
     generated_settings: Path | None = None

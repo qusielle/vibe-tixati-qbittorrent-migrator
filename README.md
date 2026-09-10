@@ -22,6 +22,8 @@ qBittorrent verifies existing data before downloading or seeding.
 - Preserves tracker URLs and torrent-level creation metadata found in transfer
   records.
 - Carries over Tixati per-transfer categories to qBittorrent categories.
+- Sets each generated `.torrent` and `.fastresume` mtime to its
+  qBittorrent `added_time`.
 - Supports exported `.torrent` files and JSON manifests as alternate inputs.
 - Emits atomic output files and an optional minimal `qBittorrent.conf`.
 - Provides a checkout launcher, console script, and importable Python API.
@@ -183,7 +185,9 @@ they are not used as the added date. This mapping is based on repeated field
 behavior across real profiles rather than an official Tixati schema. When
 using exported `.torrent` files without a matching core record, the source
 does not contain this private date; the migrator then uses the migration time,
-or a manifest-supplied `added_time`.
+or a manifest-supplied `added_time`. Both generated files receive the same
+Unix-second value as their filesystem modification time, which also preserves
+the date in tools that inspect file metadata rather than bencode.
 
 ## Limitations
 

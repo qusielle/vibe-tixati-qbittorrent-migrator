@@ -81,6 +81,8 @@ def test_migrate_recursive_torrents_and_fastresume(tmp_path: Path) -> None:
     assert resume[b"pieces"] == b"\x00\x00"
     assert resume[b"file_priority"] == [1]
     assert resume[b"added_time"] == 1_700_000_000
+    assert (destination / f"{stem}.torrent").stat().st_mtime_ns == 1_700_000_000_000_000_000
+    assert (destination / f"{stem}.fastresume").stat().st_mtime_ns == 1_700_000_000_000_000_000
 
 
 def test_manifest_supports_path_mapping_and_known_state(tmp_path: Path) -> None:
@@ -124,6 +126,8 @@ def test_manifest_supports_path_mapping_and_known_state(tmp_path: Path) -> None:
     assert resume[b"pieces"] == b"\x01\x00"
     assert resume[b"added_time"] == 1_600_000_000
     assert resume[b"qBt-seedStatus"] == 0
+    assert (destination / f"{info_hash.hex()}.torrent").stat().st_mtime_ns == 1_600_000_000_000_000_000
+    assert (destination / f"{info_hash.hex()}.fastresume").stat().st_mtime_ns == 1_600_000_000_000_000_000
 
 
 def test_missing_torrent_metadata_is_actionable(tmp_path: Path) -> None:
