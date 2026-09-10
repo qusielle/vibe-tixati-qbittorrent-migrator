@@ -1,23 +1,43 @@
 # Tixati → qBittorrent migrator
 
-This package creates qBittorrent `BT_backup` entries from `.torrent` metadata exported from a Tixati profile. For each input torrent it writes:
+This module reverse-engineers Tixati v2 `core2.dat` and creates qBittorrent
+`BT_backup` entries. For each reconstructable transfer it writes:
 
 ```text
-<v1-info-hash>.torrent
-<v1-info-hash>.fastresume
+<info-hash>.torrent
+<info-hash>.fastresume
 ```
 
-The generated resume data is deliberately conservative: unless a manifest supplies a piece state, every piece is marked unchecked and the torrent is paused. qBittorrent will recheck the existing files before downloading or seeding. This avoids claiming data that was not verified by the converter.
+The converter also retains tracker URLs found in the Tixati transfer records.
+The generated resume data is conservative: every piece is marked unchecked and
+the transfer is paused by default, so qBittorrent will recheck the existing
+files before downloading or seeding.
 
-## Important limitation of the supplied profile
+## Reverse-engineered format
 
-Tixati stores its transfer list and metadata in proprietary binary files, especially `core2.dat`. This project does not reverse-engineer that private format. The supplied Tixati directory contains `core2.dat` and settings files, but no `.torrent` files, so it is not sufficient by itself to produce qBittorrent entries.
+Tixati v2 core files are not ZIP, bencode, or a normal database. Their version-2
+payload is an RC4-compatible stream encrypted with a fixed 24-byte reader key
+and authenticated by a SHA-1 trailer. The decrypted payload is a custom field
+stream. Transfer metadata stores the bencoded `info` dictionary as:
 
-Before running the converter, stop Tixati and export the metadata. In Tixati's Transfers view, select the transfers, then use **Share → Save .torrent** and save them to a staging directory. Tixati also has an Import/Export facility, but the converter needs the actual `.torrent` metadata to construct qBittorrent's hash-named files.
+1. a bencoded prefix ending at `pieces<N>:`;
+2. a separate `N`-byte piece-hash field; and
+3. a bencoded suffix.
+
+The parser recombines those fields and verifies the result against Tixati's
+stored 20-byte info hash before emitting a torrent. It ignores unknown private
+fields rather than guessing their meaning. It does not claim Tixati's piece
+completion state, download location, category names, or other UI state that is
+not needed to create valid qBittorrent metadata.
+
+On the supplied profile, 3,253 transfers had complete torrent metadata and 10
+additional records were hash-only/link entries without piece metadata. Those
+10 are reported and skipped; no fabricated torrent is produced for them.
 
 ## Install
 
-The runtime has no third-party dependencies:
+The only runtime dependency is PyCryptodome, used for fast RC4 processing of
+large profiles. A pure-Python fallback is included but is much slower.
 
 ```bash
 python3 -m venv .venv
@@ -31,31 +51,58 @@ For development tests:
 .venv/bin/pytest
 ```
 
-## Basic migration
+## Direct migration from a Tixati profile
 
-The command recursively discovers `.torrent` files under the source directory. Use a separate torrent staging directory when the Tixati config and exported metadata are separate:
+Stop Tixati and work from a backup of its profile. The converter does not start
+Tixati or make network connections:
+
+```bash
+tixati-to-qbittorrent \
+  /path/to/tixati \
+  /path/to/qBittorrent/profile/BT_backup \
+  --save-path /srv/downloads
+```
+
+With no `--torrent-source` and no manifest, a version-2 `core2.dat` in the
+input directory is parsed directly. The default output is stopped/paused for a
+safe recheck. qBittorrent should be closed while its profile is being
+populated. Back up any existing `BT_backup` directory first. The converter
+never overwrites existing files unless `--overwrite` is supplied, and each
+file is replaced atomically.
+
+If the old and new machines use different paths, rewrite a prefix:
+
+```bash
+--path-map 'C:\\Downloads=/srv/downloads'
+```
+
+Repeat `--path-map` for additional prefixes. `--save-path` is enough when all
+transfers share one destination. Use `--write-settings` to also create a
+minimal `qBittorrent.conf` beside `BT_backup`.
+
+## Exported `.torrent` mode
+
+An explicit `--torrent-source` keeps the original `.torrent` files and is
+useful when a Tixati profile is unavailable or when you want to control the
+input set manually:
 
 ```bash
 tixati-to-qbittorrent \
   /path/to/tixati \
   /path/to/qBittorrent/profile/BT_backup \
   --torrent-source /path/to/exported-torrents \
-  --save-path /path/to/downloads
+  --save-path /srv/downloads
 ```
 
-The default output is stopped/paused. qBittorrent should be closed while its profile is being populated. Back up any existing `BT_backup` directory first. The converter never overwrites existing files unless `--overwrite` is supplied, and individual files are replaced atomically.
-
-If the paths on the old machine differ from the new machine, rewrite them with a prefix map:
-
-```bash
---path-map 'C:\\Downloads=/srv/downloads'
-```
-
-Repeat `--path-map` for more prefixes. If all transfers share one save path, `--save-path` is enough.
+Tixati's documented **Share → Save .torrent** action is an alternative source
+of metadata. The converter accepts v1-compatible torrents, including v1/v2
+hybrids. v2-only torrents are currently rejected because this qBittorrent
+resume layout is keyed by the v1 info hash.
 
 ## Per-torrent manifest
 
-Use a JSON manifest when transfers have different save paths, categories, tags, file priorities, or known piece states. Paths are relative to the manifest file unless absolute:
+Use a JSON manifest for different save paths, categories, tags, priorities, or
+trusted piece states. Paths are relative to the manifest unless absolute:
 
 ```json
 {
@@ -76,20 +123,14 @@ Use a JSON manifest when transfers have different save paths, categories, tags, 
 }
 ```
 
-`piece_state` must contain one `0` or `1` per piece. Omit it unless the state came from a trusted export; omission makes the converter emit all-zero state and forces a recheck. `file_priority` contains one qBittorrent priority value per torrent file.
-
-Run it with:
+`piece_state` must contain one `0` or `1` per piece. Omit it unless it came
+from a trusted source; omission emits all-zero state and forces a recheck.
+`file_priority` contains one qBittorrent priority value per torrent file.
 
 ```bash
 tixati-to-qbittorrent /path/to/tixati /path/to/profile/BT_backup \
   --manifest /path/to/manifest.json
 ```
-
-The current implementation accepts v1-compatible torrents, including v1/v2 hybrid torrents. v2-only torrents are reported as unsupported because qBittorrent's v1 hash-named resume layout cannot be generated from them by this version.
-
-## Optional qBittorrent settings
-
-Add `--write-settings` to write a minimal `qBittorrent.conf` next to `BT_backup` (or use `--settings-path`). It sets the default save path, optional incomplete path, and optional listening port. Tixati's unrelated settings database is not mechanically translated.
 
 ## Library use
 
@@ -99,8 +140,8 @@ from tixati_qbittorrent import migrate
 report = migrate(
     "/path/to/tixati",
     "/path/to/qBittorrent/profile/BT_backup",
-    torrent_source="/path/to/exported-torrents",
     save_path="/srv/downloads",
+    write_settings=True,
 )
-print(report.torrent_count)
+print(report.torrent_count, report.skipped_count)
 ```
