@@ -15,6 +15,8 @@ class TransferSpec:
     qBittorrent will verify the existing files instead of trusting stale state.
     ``added_time`` is an optional Unix timestamp used for qBittorrent's
     original transfer-added date.
+    ``total_downloaded`` and ``total_uploaded`` are all-time byte counters;
+    the direct core reader fills them from Tixati's validated transfer stats.
     """
 
     torrent_path: Path

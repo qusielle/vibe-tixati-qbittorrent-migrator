@@ -172,6 +172,30 @@ torrent, the bitmap is expanded into qBittorrent's one-byte-per-piece
 `pieces` state. An absent or malformed bitmap is treated conservatively as
 unchecked pieces.
 
+## State that is intentionally not guessed
+
+The reader recognizes more data than it exports. The following values are
+currently left out because their meaning is ambiguous or qBittorrent has no
+direct equivalent:
+
+- `0x11040`, a later date-like value that appears for both complete and
+  incomplete transfers; it is not assumed to be completion time.
+- Tixati's `d_priority`, `s_priority`, `s_status`, and `tt_priority` settings;
+  qBittorrent's per-file priority and stop-state fields do not have the same
+  semantics.
+- Tracker runtime fields other than tracker URLs, including announce/error
+  state, peer counts, and tracker timestamps.
+- Per-file attributes, dates, and status fields such as `0x13002`, `0x13005`,
+  and `0x13018`; the validated aggregate `0x1400a` bitmap is the safe
+  torrent-level completion source.
+- Opaque internal identifiers, limits, and counters such as `0x14003`,
+  `0x14004`, and `0x14050`–`0x1405e`.
+
+Consequently, generated resume files leave qBittorrent-only values such as
+active time, last upload/download timestamps, tracker peer counts, and
+completion time at safe defaults. This avoids turning an observed integer into
+an incorrect user-visible date or state.
+
 ### Transfer dates
 
 Tixati keeps the transfer's Created/Added date in the parent transfer record,

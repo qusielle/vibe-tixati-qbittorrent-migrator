@@ -67,7 +67,12 @@ class CoreTransfer:
     comment: bytes | None = None
     created_by: bytes | None = None
     category: str | None = None
+    # `category_path` comes from the category definition's serialized `dlloc`
+    # path and is only a default; migration path maps may rewrite it.
     category_path: str | None = None
+    # 0x14040/41 are totals; the four component counters are exposed for
+    # callers that need the accounting detail even though qB has no separate
+    # resume keys for protocol overhead.
     total_downloaded: int = 0
     total_uploaded: int = 0
     downloaded_payload: int = 0
