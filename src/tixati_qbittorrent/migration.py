@@ -545,7 +545,8 @@ def migrate(
     ``.torrent`` files.  When no explicit ``torrent_source`` or manifest is
     supplied, a version-2 ``core2.dat`` is reverse-engineered directly.  The
     converter reconstructs the embedded bencoded torrent info dictionaries;
-    it does not attempt to guess Tixati's private piece-completion state.
+    it imports only private state whose serialized shape has been validated,
+    including the aggregate piece bitmap and category download location.
     """
 
     source_dir = Path(tixati_dir).expanduser().resolve()
