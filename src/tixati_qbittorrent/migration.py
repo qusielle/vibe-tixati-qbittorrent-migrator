@@ -614,6 +614,7 @@ def migrate(
                             added_time=item.created_time,
                             total_downloaded=item.total_downloaded,
                             total_uploaded=item.total_uploaded,
+                            piece_state=item.piece_state,
                         ),
                     )
                 )

@@ -92,6 +92,7 @@ Important transfer fields include:
 | `0x14043` | payload uploaded bytes |
 | `0x14044` | download protocol-overhead bytes |
 | `0x14045` | upload protocol-overhead bytes |
+| `0x1400a` | packed aggregate piece-completion bitmap |
 
 Unknown fields are ignored. This is intentional: the file contains many
 private fields for UI state, statistics, file metadata, and scheduler data.
@@ -163,6 +164,12 @@ The two totals are copied to qBittorrent's `total_downloaded` and
 reader for callers that need the detailed accounting, while qBittorrent's
 resume format has no separate destination for them.
 
+The `0x1400a` payload begins with a little-endian piece count and then an
+MSB-first bitmap. When its count and byte length match the reconstructed
+torrent, the bitmap is expanded into qBittorrent's one-byte-per-piece
+`pieces` state. An absent or malformed bitmap is treated conservatively as
+unchecked pieces.
+
 ### Transfer dates
 
 Tixati keeps the transfer's Created/Added date in the parent transfer record,
@@ -193,8 +200,9 @@ the date in tools that inspect file metadata rather than bencode.
 
 - Version-2 `core2.dat` is currently supported; newer formats may require new
   field mappings or encryption details.
-- Tixati's piece-completion state is not converted. All generated resume
-  pieces are zeroed so qBittorrent performs a real check.
+- Tixati's aggregate piece-completion bitmap is converted when it passes the
+  count and length checks described above. Per-file verification details and
+  malformed/ambiguous bitmaps are not guessed.
 - Direct `core2.dat` migrations preserve the Tixati Created/Added timestamp as
   qBittorrent's `added_time`. Standalone exported `.torrent` files have no such
   private field and therefore use the migration time unless the manifest

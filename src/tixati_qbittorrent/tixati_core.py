@@ -73,6 +73,7 @@ class CoreTransfer:
     downloaded_overhead: int = 0
     uploaded_payload: int = 0
     uploaded_overhead: int = 0
+    piece_state: tuple[int, ...] | None = None
 
     @property
     def torrent_bytes(self) -> bytes:
@@ -195,6 +196,7 @@ def _scan_fields(plaintext: bytes) -> list[CoreField]:
         0x14043,
         0x14044,
         0x14045,
+        0x1400A,
     }
     fields: list[CoreField] = []
     position = 0
@@ -277,6 +279,33 @@ def _region_bytes(
     for field in _region(fields, start, end, field_id):
         if field.value_type == 2:
             return field.payload
+    return None
+
+
+def _region_piece_state(
+    fields: list[CoreField], start: int, end: int
+) -> tuple[int, ...] | None:
+    """Decode Tixati's packed aggregate piece bitmap, when it is valid.
+
+    Field ``0x1400a`` starts with a little-endian piece count followed by a
+    conventional MSB-first bitset.  qBittorrent stores the same state as one
+    byte per piece, so the conversion is intentionally performed only when
+    the count and byte length agree exactly.  An inconsistent bitmap is not
+    guessed into a resume file.
+    """
+
+    for field in _region(fields, start, end, 0x1400A):
+        if field.value_type != 13 or len(field.payload) < 4:
+            continue
+        piece_count = int.from_bytes(field.payload[:4], "little")
+        packed = field.payload[4:]
+        expected_length = (piece_count + 7) // 8
+        if piece_count <= 0 or len(packed) != expected_length:
+            continue
+        return tuple(
+            (packed[index // 8] >> (7 - index % 8)) & 1
+            for index in range(piece_count)
+        )
     return None
 
 
@@ -469,6 +498,9 @@ def extract_core(
                 uploaded_overhead = _region_integer(
                     fields, hash_field.position, next_hash, 0x14045
                 )
+                piece_state = _region_piece_state(
+                    fields, hash_field.position, next_hash
+                )
                 found[info_hash] = CoreTransfer(
                     info_hash=info_hash,
                     info=info_value,
@@ -486,6 +518,7 @@ def extract_core(
                     downloaded_overhead=downloaded_overhead or 0,
                     uploaded_payload=uploaded_payload or 0,
                     uploaded_overhead=uploaded_overhead or 0,
+                    piece_state=piece_state,
                 )
                 break
             candidate_index -= 1
