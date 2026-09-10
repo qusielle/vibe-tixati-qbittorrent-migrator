@@ -57,13 +57,17 @@ Stop Tixati and work from a backup of its profile. The converter does not start
 Tixati or make network connections:
 
 ```bash
-python -m tixati_qbittorrent \
+tixati-qbittorrent-migrator/.venv/bin/python \
+  -m tixati-qbittorrent-migrator \
   /path/to/tixati \
   /path/to/qBittorrent/profile/BT_backup \
   --save-path /srv/downloads
 ```
 
-The installed console command `tixati-to-qbittorrent` is equivalent.
+Run that command from the directory containing the checkout. It uses the
+checkout's `src/` directory directly, so no build or package installation is
+needed. The installed console command `tixati-to-qbittorrent` and
+`python -m tixati_qbittorrent` are equivalent after installing the package.
 
 With no `--torrent-source` and no manifest, a version-2 `core2.dat` in the
 input directory is parsed directly. The default output is stopped/paused for a
@@ -89,7 +93,8 @@ useful when a Tixati profile is unavailable or when you want to control the
 input set manually:
 
 ```bash
-python -m tixati_qbittorrent \
+tixati-qbittorrent-migrator/.venv/bin/python \
+  -m tixati-qbittorrent-migrator \
   /path/to/tixati \
   /path/to/qBittorrent/profile/BT_backup \
   --torrent-source /path/to/exported-torrents \
@@ -130,7 +135,9 @@ from a trusted source; omission emits all-zero state and forces a recheck.
 `file_priority` contains one qBittorrent priority value per torrent file.
 
 ```bash
-python -m tixati_qbittorrent /path/to/tixati /path/to/profile/BT_backup \
+tixati-qbittorrent-migrator/.venv/bin/python \
+  -m tixati-qbittorrent-migrator \
+  /path/to/tixati /path/to/profile/BT_backup \
   --manifest /path/to/manifest.json
 ```
 
