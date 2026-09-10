@@ -7,9 +7,10 @@ import json
 import os
 import tempfile
 import time
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from .bencode import BValue, BencodeError, decode, encode
 from .config import render_qbittorrent_conf
@@ -18,6 +19,7 @@ from .tixati_core import (
     CoreExtraction,
     CoreFormatError,
     CoreTransfer,
+    Progress,
     extract_core_file,
 )
 
@@ -40,6 +42,11 @@ _TIXATI_DATA_FILES = {
 
 class MigrationError(RuntimeError):
     """Raised when the source is incomplete or cannot be converted safely."""
+
+
+def _notify(progress: Progress | None, message: str) -> None:
+    if progress is not None:
+        progress(message)
 
 
 @dataclass(frozen=True)
@@ -435,10 +442,12 @@ def _prepare_specs(
     specs: list[TransferSpec],
     *,
     now: int,
+    progress: Progress | None = None,
 ) -> list[_Prepared]:
     return _prepare_pairs(
         ((_load_torrent(spec.torrent_path), spec) for spec in specs),
         now=now,
+        progress=progress,
     )
 
 
@@ -446,10 +455,13 @@ def _prepare_pairs(
     pairs: Iterable[tuple[_Torrent, TransferSpec]],
     *,
     now: int,
+    progress: Progress | None = None,
 ) -> list[_Prepared]:
     prepared: list[_Prepared] = []
     seen: dict[str, Path] = {}
-    for torrent, spec in pairs:
+    for index, (torrent, spec) in enumerate(pairs, start=1):
+        if progress is not None and (index == 1 or index % 250 == 0):
+            progress(f"preparing resume data {index}")
         info_hash_hex = torrent.info_hash.hex()
         if info_hash_hex in seen:
             raise MigrationError(
@@ -485,6 +497,7 @@ def migrate(
     incomplete_path: str = "",
     listen_port: int | None = None,
     now: int | None = None,
+    progress: Callable[[str], None] | None = None,
 ) -> MigrationReport:
     """Convert torrent metadata into a qBittorrent ``BT_backup`` directory.
 
@@ -527,7 +540,10 @@ def migrate(
             # Very small placeholder files are useful in tests and should fall
             # through to the normal exported-torrent error below.
             if core_path.stat().st_size >= 24:
-                direct_core_extraction = extract_core_file(core_path)
+                direct_core_extraction = extract_core_file(
+                    core_path,
+                    progress=progress,
+                )
         except (OSError, CoreFormatError) as exc:
             raise MigrationError(f"cannot reverse-engineer {core_path}: {exc}") from exc
         if direct_core_extraction is not None and direct_core_extraction.transfers:
@@ -535,7 +551,9 @@ def migrate(
                 value.hex() for value in direct_core_extraction.skipped_info_hashes
             )
             core_pairs = []
-            for item in direct_core_extraction.transfers:
+            for index, item in enumerate(direct_core_extraction.transfers, start=1):
+                if progress is not None and (index == 1 or index % 250 == 0):
+                    progress(f"building torrent files {index}/{len(direct_core_extraction.transfers)}")
                 torrent = _core_torrent(item)
                 core_pairs.append(
                     (
@@ -582,18 +600,23 @@ def migrate(
     timestamp = int(time.time()) if now is None else now
     if content_layout not in {"Original", "Subfolder"}:
         raise MigrationError("content_layout must be Original or Subfolder")
+    _notify(progress, "preparing qBittorrent resume data")
     prepared = (
-        _prepare_pairs(core_pairs, now=timestamp)
+        _prepare_pairs(core_pairs, now=timestamp, progress=progress)
         if core_pairs is not None
-        else _prepare_specs(specs, now=timestamp)
+        else _prepare_specs(specs, now=timestamp, progress=progress)
     )
+    _notify(progress, f"prepared {len(prepared)} transfer entries")
     try:
         destination.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
         raise MigrationError(f"cannot create output directory {destination}: {exc}") from exc
 
     planned_paths: list[Path] = []
-    for item in prepared:
+    _notify(progress, f"writing {len(prepared)} torrent/resume pairs")
+    for index, item in enumerate(prepared, start=1):
+        if progress is not None and (index == 1 or index % 250 == 0 or index == len(prepared)):
+            progress(f"writing output {index}/{len(prepared)}")
         stem = item.torrent.info_hash.hex()
         planned_paths.extend(
             (destination / f"{stem}.torrent", destination / f"{stem}.fastresume")
@@ -643,6 +666,7 @@ def migrate(
             ).encode("utf-8"),
             overwrite=overwrite,
         )
+        _notify(progress, f"wrote settings {generated_settings}")
 
     return MigrationReport(
         torrent_count=len(prepared),

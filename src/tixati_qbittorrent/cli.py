@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
 from .migration import MigrationError, migrate
@@ -15,6 +16,10 @@ def _path_map(value: str) -> tuple[str, str]:
     if not old:
         raise argparse.ArgumentTypeError("path map OLD cannot be empty")
     return old, new
+
+
+def _progress(message: str) -> None:
+    print(f"[info] {message}", file=sys.stderr, flush=True)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -109,6 +114,7 @@ def main(argv: list[str] | None = None) -> int:
             settings_path=args.settings_path,
             incomplete_path=args.incomplete_path,
             listen_port=args.listen_port,
+            progress=_progress,
         )
     except MigrationError as exc:
         print(f"error: {exc}")

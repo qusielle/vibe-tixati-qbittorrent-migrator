@@ -13,6 +13,7 @@ from __future__ import annotations
 import bisect
 import hashlib
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -25,6 +26,7 @@ CORE_KEY = bytes.fromhex("2b6fa3709a12130aad251db6d442d38819155b9e3270f9cc")
 CORE_VERSION = 2
 _FIELD_MARKER = b"\x05\x00\x00\x00\x04"
 _PIECES_RE = re.compile(rb"pieces([0-9]+):$")
+Progress = Callable[[str], None]
 
 
 class CoreFormatError(ValueError):
@@ -109,7 +111,7 @@ def _rc4(data: bytes, key: bytes = CORE_KEY) -> bytes:
     return bytes(out)
 
 
-def decrypt_core(path: str | Path) -> bytes:
+def decrypt_core(path: str | Path, *, progress: Progress | None = None) -> bytes:
     """Decrypt and authenticate a version-2 ``core2.dat`` file."""
 
     source = Path(path)
@@ -119,13 +121,19 @@ def decrypt_core(path: str | Path) -> bytes:
         raise CoreFormatError(f"cannot read {source}: {exc}") from exc
     if len(raw) < 4 + 20:
         raise CoreFormatError(f"{source} is too small to be a core2.dat file")
+    if progress is not None:
+        progress(f"read {source.name} ({len(raw) / 1024 / 1024:.1f} MiB)")
     version = int.from_bytes(raw[:4], "little")
     if version != CORE_VERSION:
         raise CoreFormatError(
             f"{source} has unsupported core format version {version}; "
             f"expected {CORE_VERSION}"
         )
+    if progress is not None:
+        progress("decrypting core payload")
     plaintext = _rc4(raw[4:-20])
+    if progress is not None:
+        progress("checking core SHA-1 integrity")
     expected = raw[-20:]
     actual = hashlib.sha1(plaintext).digest()
     if actual != expected:
@@ -185,10 +193,18 @@ def _region(fields: list[CoreField], start: int, end: int, field_id: int) -> lis
     return [field for field in fields[left:right] if field.field_id == field_id]
 
 
-def extract_core(plaintext: bytes) -> CoreExtraction:
+def extract_core(
+    plaintext: bytes,
+    *,
+    progress: Progress | None = None,
+) -> CoreExtraction:
     """Reconstruct torrent metadata from decrypted core plaintext."""
 
+    if progress is not None:
+        progress("scanning serialized transfer fields")
     fields = _scan_fields(plaintext)
+    if progress is not None:
+        progress(f"found {len(fields)} relevant fields")
     hash_fields = [
         field
         for field in fields
@@ -225,6 +241,8 @@ def extract_core(plaintext: bytes) -> CoreExtraction:
 
     found: dict[bytes, CoreTransfer] = {}
     for index, prefix in enumerate(prefixes):
+        if progress is not None and (index == 0 or (index + 1) % 250 == 0):
+            progress(f"reconstructing torrent metadata {index + 1}/{len(prefixes)}")
         match = _PIECES_RE.search(prefix.payload)
         if match is None:
             continue
@@ -301,10 +319,19 @@ def extract_core(plaintext: bytes) -> CoreExtraction:
         for hash_field in hash_fields
         if hash_field.payload not in found
     )
+    if progress is not None:
+        progress(
+            f"reconstructed {len(transfers)} transfers; "
+            f"{len(skipped)} records skipped"
+        )
     return CoreExtraction(transfers=transfers, skipped_info_hashes=skipped)
 
 
-def extract_core_file(path: str | Path) -> CoreExtraction:
+def extract_core_file(
+    path: str | Path,
+    *,
+    progress: Progress | None = None,
+) -> CoreExtraction:
     """Decrypt, authenticate and extract transfers from ``core2.dat``."""
 
-    return extract_core(decrypt_core(path))
+    return extract_core(decrypt_core(path, progress=progress), progress=progress)
