@@ -24,8 +24,13 @@ from .bencode import BValue, BencodeError, decode, encode
 # the user's profile contents; the profile data remains encrypted on disk.
 CORE_KEY = bytes.fromhex("2b6fa3709a12130aad251db6d442d38819155b9e3270f9cc")
 CORE_VERSION = 2
+# The five-byte preamble is stable, but the body also contains nested opaque
+# data. We therefore scan for this marker instead of assuming that every byte
+# belongs to a top-level record.
 _FIELD_MARKER = b"\x05\x00\x00\x00\x04"
 _PIECES_RE = re.compile(rb"pieces([0-9]+):$")
+# CLI code supplies this callback so long-running scans can report progress;
+# the library remains silent when it is omitted.
 Progress = Callable[[str], None]
 
 
@@ -37,30 +42,29 @@ class CoreFormatError(ValueError):
 class CoreField:
     """One recognized field in the decrypted Tixati field stream."""
 
-    position: int
-    field_id: int
-    value_type: int
-    payload: bytes
+    position: int  # Byte offset in the decrypted body; used for record regions.
+    field_id: int  # Tixati's private numeric field identifier.
+    value_type: int  # The serialized type byte; 2 is the byte-string type here.
+    payload: bytes  # Length-prefixed value with the type byte removed.
 
 
 @dataclass(frozen=True)
 class CoreTransfer:
     """Torrent metadata reconstructed from one Tixati transfer record."""
 
-    info_hash: bytes
-    info: dict[bytes, BValue]
-    info_bytes: bytes
-    torrent_path: str
-    trackers: tuple[bytes, ...]
+    info_hash: bytes  # SHA-1 of the exact bencoded info_bytes.
+    info: dict[bytes, BValue]  # Decoded form used for validation and fastresume.
+    info_bytes: bytes  # Keep raw bytes: re-encoding can change a noncanonical hash.
+    torrent_path: str  # Diagnostic source path or Tixati hash-link label.
+    trackers: tuple[bytes, ...]  # URLs found in this transfer's field region.
 
     @property
     def torrent_bytes(self) -> bytes:
         """Return a valid root torrent dictionary containing this info dict."""
 
         # Keep the exact info bytes.  Tixati normally emits canonical bencode,
-        # but one real record in the supplied profile preserves a different
-        # dictionary-key order.  Re-encoding that dictionary would change its
-        # info hash.
+        # but records can preserve a different dictionary-key order.
+        # Re-encoding that dictionary would change its info hash.
         encoded_values: dict[bytes, bytes] = {b"info": self.info_bytes}
         if self.trackers:
             encoded_values[b"announce"] = encode(self.trackers[0])
@@ -182,11 +186,17 @@ def _scan_fields(plaintext: bytes) -> list[CoreField]:
                     payload=plaintext[payload_start:payload_end],
                 )
             )
+        # Do not jump by encoded_length: a valid field may be nested in an
+        # opaque structure, and false marker-looking bytes can occur in a
+        # payload. The known-ID and bounds checks above filter those safely.
         position += 1
     return fields
 
 
 def _region(fields: list[CoreField], start: int, end: int, field_id: int) -> list[CoreField]:
+    # `_scan_fields` emits fields in byte order. Restricting lookup to the
+    # interval between two info-hash records associates paths and trackers with
+    # one transfer without interpreting the rest of Tixati's object graph.
     positions = [field.position for field in fields]
     left = bisect.bisect_left(positions, start)
     right = bisect.bisect_left(positions, end)
@@ -212,6 +222,8 @@ def extract_core(
         and field.value_type == 2
         and len(field.payload) == 20
     ]
+    # The info-hash table is both the transfer index and the integrity check
+    # for pairing a prefix with the correct piece-hash blob.
     hash_by_value = {field.payload: field for field in hash_fields}
     hash_positions = [field.position for field in hash_fields]
 
@@ -246,6 +258,10 @@ def extract_core(
         match = _PIECES_RE.search(prefix.payload)
         if match is None:
             continue
+        # The number in `pieces<N>:` is the byte length of the external field,
+        # not the torrent piece size. Several torrents can share that length,
+        # so candidates are tested by the resulting SHA-1 rather than position
+        # alone.
         piece_length = int(match.group(1))
         candidates = pieces_by_length.get(piece_length, [])
         candidate_positions = piece_positions.get(piece_length, [])
@@ -255,6 +271,9 @@ def extract_core(
             if index + 1 < len(prefix_positions)
             else len(plaintext)
         )
+        # The suffix is the next 0x11028 field before another info prefix. It
+        # commonly contains only `e`, but private keys such as `private` may
+        # appear there for some torrents.
         suffix_candidates = [
             field
             for field in suffixes

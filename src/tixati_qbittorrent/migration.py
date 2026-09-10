@@ -90,6 +90,10 @@ def _parse_torrent(
     *,
     expected_info_hash: bytes | None = None,
 ) -> _Torrent:
+    # `expected_info_hash` is used only for reconstructed core records. Their
+    # raw info bytes have already been SHA-1 verified; decoding them here gives
+    # us the normal qBittorrent validation fields without re-encoding the info
+    # dictionary and accidentally changing a noncanonical hash.
     try:
         root_value = decode(raw)
     except BencodeError as exc:
@@ -209,6 +213,9 @@ def _make_fastresume(
     *,
     now: int,
 ) -> bytes:
+    # qBittorrent/libtorrent accepts a compact 0/1 piece-state byte string.
+    # Unknown Tixati state is intentionally represented as all zeroes by
+    # `_validate_piece_state`, which causes a safe recheck on first load.
     if spec.file_priority is None:
         file_priority = [1] * torrent.file_count
     else:
@@ -415,6 +422,9 @@ def _default_specs(
 
 
 def _atomic_write(path: Path, data: bytes, *, overwrite: bool) -> None:
+    # Write, flush, fsync, and rename in the destination directory. A partially
+    # written resume file is worse than a failed migration because qBittorrent
+    # may discover it on its next startup.
     if path.exists() and not overwrite:
         raise MigrationError(f"refusing to overwrite existing file {path}")
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -457,6 +467,8 @@ def _prepare_pairs(
     now: int,
     progress: Progress | None = None,
 ) -> list[_Prepared]:
+    # Preparation is kept separate from writing so all output paths can be
+    # checked for conflicts before the first file is replaced.
     prepared: list[_Prepared] = []
     seen: dict[str, Path] = {}
     for index, (torrent, spec) in enumerate(pairs, start=1):
@@ -518,6 +530,9 @@ def migrate(
     skipped_info_hashes: tuple[str, ...] = ()
     direct_core_extraction: CoreExtraction | None = None
     core_pairs: list[tuple[_Torrent, TransferSpec]] | None = None
+    # Input precedence is explicit: manifests override everything, an explicit
+    # torrent source is used as requested, and a local core2.dat is the direct
+    # fallback when neither was supplied.
     if manifest is not None:
         manifest_path = Path(manifest).expanduser().resolve()
         try:

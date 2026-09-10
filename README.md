@@ -257,4 +257,7 @@ uv lock --check
 uv run pytest
 ```
 
+Maintainer notes and the format-to-code map are in
+[`ARCHITECTURE.md`](ARCHITECTURE.md).
+
 The project is released under the MIT license.
