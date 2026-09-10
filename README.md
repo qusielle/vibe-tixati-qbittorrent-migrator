@@ -310,10 +310,10 @@ assigning a wrong meaning to an undocumented field.
 With `--write-settings`, compatible values are copied to the generated
 qBittorrent profile: the incoming port, default save path, port forwarding,
 DHT enablement, per-torrent connection limit, upload slots, and managed active
-download/upload limits. Explicit `--listen-port` and `--save-path` arguments
-take precedence. Tixati's multiple proxy scopes, encryption modes, protocol
-selection, disk throttles, and UI-only values have no sufficiently certain
-one-to-one qBittorrent mapping and are left unchanged.
+download/upload limits. Explicit `--save-path` takes precedence. Tixati's
+multiple proxy scopes, encryption modes, protocol selection, disk throttles,
+and UI-only values have no sufficiently certain one-to-one qBittorrent mapping
+and are left unchanged.
 
 ## Limitations
 

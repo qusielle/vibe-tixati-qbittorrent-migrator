@@ -91,7 +91,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="explicit path for qBittorrent.conf",
     )
     parser.add_argument("--incomplete-path", default="")
-    parser.add_argument("--listen-port", type=int)
     return parser
 
 
@@ -113,7 +112,6 @@ def main(argv: list[str] | None = None) -> int:
             write_settings=args.write_settings,
             settings_path=args.settings_path,
             incomplete_path=args.incomplete_path,
-            listen_port=args.listen_port,
             progress=_progress,
         )
     except MigrationError as exc:

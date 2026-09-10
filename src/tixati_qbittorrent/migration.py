@@ -617,7 +617,6 @@ def migrate(
     write_settings: bool = False,
     settings_path: str | Path | None = None,
     incomplete_path: str = "",
-    listen_port: int | None = None,
     now: int | None = None,
     progress: Callable[[str], None] | None = None,
 ) -> MigrationReport:
@@ -845,7 +844,6 @@ def migrate(
             render_qbittorrent_conf(
                 save_path=settings_save_path,
                 incomplete_path=incomplete_path,
-                listen_port=listen_port,
                 tixati_settings=source_settings,
             ).encode("utf-8"),
             overwrite=overwrite,

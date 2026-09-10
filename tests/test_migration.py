@@ -235,6 +235,7 @@ def test_missing_torrent_metadata_is_actionable(tmp_path: Path) -> None:
 def test_optional_settings_are_written_next_to_backup(tmp_path: Path) -> None:
     tixati = tmp_path / "tixati"
     tixati.mkdir()
+    _write_settings(tixati / "settings2.dat")
     source = tmp_path / "torrents"
     source.mkdir()
     _write_torrent(source / "one.torrent")
@@ -247,7 +248,6 @@ def test_optional_settings_are_written_next_to_backup(tmp_path: Path) -> None:
         torrent_source=source,
         save_path="/srv/downloads",
         write_settings=True,
-        listen_port=45678,
     )
 
     assert report.settings_path == profile / "qBittorrent.conf"
@@ -256,7 +256,7 @@ def test_optional_settings_are_written_next_to_backup(tmp_path: Path) -> None:
     settings = report.settings_path.read_text(encoding="utf-8")
     assert "Downloads\\SavePath=/srv/downloads" in settings
     assert "[BitTorrent]" in settings
-    assert "Session\\Port=45678" in settings
+    assert "Session\\Port=15363" in settings
 
 
 def test_tixati_settings_are_imported_and_path_mapped(tmp_path: Path) -> None:

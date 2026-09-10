@@ -11,7 +11,6 @@ def render_qbittorrent_conf(
     *,
     save_path: str = "",
     incomplete_path: str = "",
-    listen_port: int | None = None,
     tixati_settings: TixatiSettings | None = None,
 ) -> str:
     """Render a qBittorrent ``QSettings``-compatible configuration.
@@ -24,9 +23,11 @@ def render_qbittorrent_conf(
 
     source_save_path = tixati_settings.path("incpath") if tixati_settings else None
     effective_save_path = save_path or source_save_path or ""
-    effective_port = listen_port
-    if effective_port is None and tixati_settings is not None:
-        effective_port = _int_setting(tixati_settings, "incport")
+    effective_port = (
+        _int_setting(tixati_settings, "incport")
+        if tixati_settings is not None
+        else None
+    )
 
     lines = [
         "[Preferences]",
@@ -50,7 +51,7 @@ def render_qbittorrent_conf(
         )
     if effective_port is not None:
         if not 1 <= effective_port <= 65535:
-            raise ValueError("listen_port must be between 1 and 65535")
+            raise ValueError("Tixati incport must be between 1 and 65535")
         session_values.append(f"Session\\Port={effective_port}")
 
     if tixati_settings is not None:
@@ -104,7 +105,6 @@ def write_qbittorrent_conf(
     *,
     save_path: str = "",
     incomplete_path: str = "",
-    listen_port: int | None = None,
     tixati_settings: TixatiSettings | None = None,
 ) -> None:
     """Write a qBittorrent config file, creating its parent directory."""
@@ -114,7 +114,6 @@ def write_qbittorrent_conf(
         render_qbittorrent_conf(
             save_path=save_path,
             incomplete_path=incomplete_path,
-            listen_port=listen_port,
             tixati_settings=tixati_settings,
         ),
         encoding="utf-8",
