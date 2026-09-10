@@ -158,6 +158,40 @@ def test_manifest_supports_path_mapping_and_known_state(tmp_path: Path) -> None:
     assert (destination / f"{info_hash.hex()}.fastresume").stat().st_mtime_ns == 1_600_000_000_000_000_000
 
 
+def test_complete_piece_state_does_not_fabricate_completion_date(tmp_path: Path) -> None:
+    tixati = tmp_path / "tixati"
+    tixati.mkdir()
+    metadata = tmp_path / "metadata"
+    metadata.mkdir()
+    torrent_path = metadata / "complete.torrent"
+    info_hash = _write_torrent(torrent_path, multi_file=True)
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "torrents": [
+                    {
+                        "torrent": "metadata/complete.torrent",
+                        "piece_state": [1, 1],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    migrate(tixati, tmp_path / "profile", manifest=manifest, now=1_700_000_000)
+
+    resume = decode(
+        (tmp_path / "profile" / "BT_backup" / f"{info_hash.hex()}.fastresume").read_bytes()
+    )
+    assert isinstance(resume, dict)
+    assert resume[b"pieces"] == b"\x01\x01"
+    assert resume[b"qBt-seedStatus"] == 1
+    assert resume[b"completed_time"] == 0
+    assert resume[b"last_seen_complete"] == 0
+
+
 def test_missing_torrent_metadata_is_actionable(tmp_path: Path) -> None:
     tixati = tmp_path / "tixati"
     tixati.mkdir()

@@ -250,7 +250,14 @@ def _make_fastresume(
         b"allocation": b"sparse",
         b"apply_ip_filter": 1,
         b"auto_managed": 0 if spec.paused else 1,
-        b"completed_time": now if complete else 0,
+        # A complete piece bitmap proves the current content state, but it
+        # does not tell us when the torrent became complete.  In particular,
+        # Tixati's other date-like field is also present on incomplete and
+        # active transfers, so using either value here would fabricate a
+        # user-visible completion date.  Keep qBittorrent's date fields at
+        # their safe defaults until a source timestamp with proven semantics
+        # is available.
+        b"completed_time": 0,
         b"disable_dht": 1 if private else 0,
         b"disable_lsd": 1 if private else 0,
         b"disable_pex": 1 if private else 0,
@@ -262,7 +269,7 @@ def _make_fastresume(
         b"httpseeds": [],
         b"info-hash": torrent.info_hash,
         b"last_download": 0,
-        b"last_seen_complete": now if complete else 0,
+        b"last_seen_complete": 0,
         b"last_upload": 0,
         b"libtorrent-version": DEFAULT_LIBTORRENT_VERSION.encode("ascii"),
         b"max_connections": 16777215,
