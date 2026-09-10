@@ -286,8 +286,8 @@ def _make_fastresume(
         b"share_mode": 0,
         b"stop_when_ready": 0,
         b"super_seeding": 0,
-        b"total_downloaded": 0,
-        b"total_uploaded": 0,
+        b"total_downloaded": spec.total_downloaded,
+        b"total_uploaded": spec.total_uploaded,
         b"trackers": _tracker_tiers(torrent.root),
         b"upload_mode": 0,
         b"upload_rate_limit": -1,
@@ -600,6 +600,8 @@ def migrate(
                             paused=paused,
                             content_layout=content_layout,
                             added_time=item.created_time,
+                            total_downloaded=item.total_downloaded,
+                            total_uploaded=item.total_uploaded,
                         ),
                     )
                 )

@@ -84,6 +84,12 @@ Important transfer fields include:
 | `0x11028` | bencoded info-dictionary suffix |
 | `0x1103f` | per-transfer Created/Added timestamp, type 6 `uint64` Unix seconds |
 | `0x12001` | tracker URL |
+| `0x14040` | all-time downloaded bytes, including protocol overhead |
+| `0x14041` | all-time uploaded bytes, including protocol overhead |
+| `0x14042` | payload downloaded bytes |
+| `0x14043` | payload uploaded bytes |
+| `0x14044` | download protocol-overhead bytes |
+| `0x14045` | upload protocol-overhead bytes |
 
 Unknown fields are ignored. This is intentional: the file contains many
 private fields for UI state, statistics, file metadata, and scheduler data.
@@ -139,6 +145,21 @@ silently change its info hash.
 When present, `0x11006`, `0x11007`, and `0x11008` are emitted as the standard
 torrent root keys `creation date`, `comment`, and `created by`. They do not
 affect the info hash because they are outside the `info` dictionary.
+
+### Transfer counters
+
+The six `0x14040`–`0x14045` counters occur in the same transfer record as the
+metadata. Their structure is especially clear because the totals satisfy:
+
+```text
+0x14040 = 0x14042 + 0x14044   # downloaded payload + download overhead
+0x14041 = 0x14043 + 0x14045   # uploaded payload + upload overhead
+```
+
+The two totals are copied to qBittorrent's `total_downloaded` and
+`total_uploaded` resume keys. The four components are retained by the core
+reader for callers that need the detailed accounting, while qBittorrent's
+resume format has no separate destination for them.
 
 ### Transfer dates
 

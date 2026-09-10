@@ -67,6 +67,12 @@ class CoreTransfer:
     comment: bytes | None = None
     created_by: bytes | None = None
     category: str | None = None
+    total_downloaded: int = 0
+    total_uploaded: int = 0
+    downloaded_payload: int = 0
+    downloaded_overhead: int = 0
+    uploaded_payload: int = 0
+    uploaded_overhead: int = 0
 
     @property
     def torrent_bytes(self) -> bytes:
@@ -183,6 +189,12 @@ def _scan_fields(plaintext: bytes) -> list[CoreField]:
         0x11028,
         0x1103F,
         0x12001,
+        0x14040,
+        0x14041,
+        0x14042,
+        0x14043,
+        0x14044,
+        0x14045,
     }
     fields: list[CoreField] = []
     position = 0
@@ -439,6 +451,24 @@ def extract_core(
                     )
                 except UnicodeDecodeError:
                     category = category_value.decode("utf-8", "replace")
+                downloaded = _region_integer(
+                    fields, hash_field.position, next_hash, 0x14040
+                )
+                uploaded = _region_integer(
+                    fields, hash_field.position, next_hash, 0x14041
+                )
+                downloaded_payload = _region_integer(
+                    fields, hash_field.position, next_hash, 0x14042
+                )
+                uploaded_payload = _region_integer(
+                    fields, hash_field.position, next_hash, 0x14043
+                )
+                downloaded_overhead = _region_integer(
+                    fields, hash_field.position, next_hash, 0x14044
+                )
+                uploaded_overhead = _region_integer(
+                    fields, hash_field.position, next_hash, 0x14045
+                )
                 found[info_hash] = CoreTransfer(
                     info_hash=info_hash,
                     info=info_value,
@@ -450,6 +480,12 @@ def extract_core(
                     comment=comment,
                     created_by=created_by,
                     category=category,
+                    total_downloaded=downloaded or 0,
+                    total_uploaded=uploaded or 0,
+                    downloaded_payload=downloaded_payload or 0,
+                    downloaded_overhead=downloaded_overhead or 0,
+                    uploaded_payload=uploaded_payload or 0,
+                    uploaded_overhead=uploaded_overhead or 0,
                 )
                 break
             candidate_index -= 1

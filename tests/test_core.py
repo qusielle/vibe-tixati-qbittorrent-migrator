@@ -57,6 +57,12 @@ def _fixture_core() -> bytes:
             _field(0x11027, 2, prefix),
             _field(0x11028, 2, suffix),
             _field(0x12001, 2, b"https://tracker.example/announce"),
+            _field(0x14040, 6, struct.pack("<Q", 1_500)),
+            _field(0x14041, 6, struct.pack("<Q", 2_500)),
+            _field(0x14042, 6, struct.pack("<Q", 1_400)),
+            _field(0x14043, 6, struct.pack("<Q", 2_300)),
+            _field(0x14044, 6, struct.pack("<Q", 100)),
+            _field(0x14045, 6, struct.pack("<Q", 200)),
             _generic_string(b"d_category", b"fixture-category"),
             # A hash-only record, analogous to Tixati's hash-link entries.
             _field(0x11009, 2, b"x" * 20),
@@ -86,6 +92,12 @@ def test_core_decrypts_and_reconstructs_torrent(tmp_path: Path) -> None:
     assert transfer.comment == b"fixture comment"
     assert transfer.created_by == b"fixture creator"
     assert transfer.category == "fixture-category"
+    assert transfer.total_downloaded == 1_500
+    assert transfer.total_uploaded == 2_500
+    assert transfer.downloaded_payload == 1_400
+    assert transfer.downloaded_overhead == 100
+    assert transfer.uploaded_payload == 2_300
+    assert transfer.uploaded_overhead == 200
     root = decode(transfer.torrent_bytes)
     assert isinstance(root, dict)
     assert root[b"info"] == transfer.info
@@ -114,3 +126,5 @@ def test_migrate_uses_core_when_no_torrent_source_is_given(tmp_path: Path) -> No
     assert resume[b"paused"] == 1
     assert resume[b"added_time"] == 1_600_000_123
     assert resume[b"qBt-category"] == b"fixture-category"
+    assert resume[b"total_downloaded"] == 1_500
+    assert resume[b"total_uploaded"] == 2_500

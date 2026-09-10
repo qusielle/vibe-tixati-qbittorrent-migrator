@@ -27,6 +27,8 @@ class TransferSpec:
     file_priority: tuple[int, ...] | None = None
     piece_state: tuple[int, ...] | None = None
     added_time: int | None = None
+    total_downloaded: int = 0
+    total_uploaded: int = 0
 
 
 @dataclass(frozen=True)
