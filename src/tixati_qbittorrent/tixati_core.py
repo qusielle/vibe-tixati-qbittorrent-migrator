@@ -13,6 +13,7 @@ from __future__ import annotations
 import bisect
 import hashlib
 import re
+import struct
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -62,6 +63,10 @@ class CoreTransfer:
     # timestamp. It occurs once in every observed transfer record and remains
     # stable while later activity timestamps change, which identifies it as
     # the value shown by Tixati's Created/Added column.
+    creation_date: int | None = None
+    comment: bytes | None = None
+    created_by: bytes | None = None
+    category: str | None = None
 
     @property
     def torrent_bytes(self) -> bytes:
@@ -71,6 +76,12 @@ class CoreTransfer:
         # but records can preserve a different dictionary-key order.
         # Re-encoding that dictionary would change its info hash.
         encoded_values: dict[bytes, bytes] = {b"info": self.info_bytes}
+        if self.creation_date is not None:
+            encoded_values[b"creation date"] = encode(self.creation_date)
+        if self.comment is not None:
+            encoded_values[b"comment"] = encode(self.comment)
+        if self.created_by is not None:
+            encoded_values[b"created by"] = encode(self.created_by)
         if self.trackers:
             encoded_values[b"announce"] = encode(self.trackers[0])
             encoded_values[b"announce-list"] = encode([list(self.trackers)])
@@ -163,6 +174,9 @@ def _scan_fields(plaintext: bytes) -> list[CoreField]:
 
     wanted = {
         0x11003,
+        0x11006,
+        0x11007,
+        0x11008,
         0x11009,
         0x1101E,
         0x11027,
@@ -230,6 +244,56 @@ def _created_time(fields: list[CoreField], start: int, end: int) -> int | None:
         if field.value_type == 6 and len(field.payload) == 8:
             return int.from_bytes(field.payload, "little")
     return None
+
+
+def _region_integer(
+    fields: list[CoreField], start: int, end: int, field_id: int
+) -> int | None:
+    """Read one unsigned 64-bit integer field from a transfer region."""
+
+    for field in _region(fields, start, end, field_id):
+        if field.value_type == 6 and len(field.payload) == 8:
+            return int.from_bytes(field.payload, "little")
+    return None
+
+
+def _region_bytes(
+    fields: list[CoreField], start: int, end: int, field_id: int
+) -> bytes | None:
+    """Read one byte-string field from a transfer region, preserving empties."""
+
+    for field in _region(fields, start, end, field_id):
+        if field.value_type == 2:
+            return field.payload
+    return None
+
+
+def _generic_string_value(
+    plaintext: bytes, start: int, end: int, key: bytes
+) -> bytes | None:
+    """Read a Tixati generic-map string value from one transfer region.
+
+    Transfer-specific settings are stored in a second, map-like serializer
+    rather than in the numeric field stream.  A map entry is encoded as a
+    length-prefixed type-2 key immediately followed by a length-prefixed
+    type-2 value.  This narrow reader is deliberately scoped to the current
+    transfer region; it does not attempt to interpret arbitrary nested maps.
+    """
+
+    encoded_key = struct.pack("<I", len(key) + 1) + b"\x02" + key
+    position = plaintext.find(encoded_key, start, end)
+    if position < 0:
+        return None
+    value_header = position + len(encoded_key)
+    if value_header + 5 > end:
+        return None
+    value_length = int.from_bytes(plaintext[value_header : value_header + 4], "little")
+    if value_length < 1 or plaintext[value_header + 4] != 2:
+        return None
+    value_end = value_header + 4 + value_length
+    if value_end > end:
+        return None
+    return plaintext[value_header + 5 : value_end]
 
 
 def extract_core(
@@ -352,6 +416,29 @@ def extract_core(
                     hash_field.position,
                     next_hash,
                 )
+                creation_date = _region_integer(
+                    fields, hash_field.position, next_hash, 0x11006
+                )
+                comment = _region_bytes(
+                    fields, hash_field.position, next_hash, 0x11007
+                )
+                created_by = _region_bytes(
+                    fields, hash_field.position, next_hash, 0x11008
+                )
+                category_value = _generic_string_value(
+                    plaintext,
+                    hash_field.position,
+                    next_hash,
+                    b"d_category",
+                )
+                try:
+                    category = (
+                        category_value.decode("utf-8")
+                        if category_value is not None
+                        else None
+                    )
+                except UnicodeDecodeError:
+                    category = category_value.decode("utf-8", "replace")
                 found[info_hash] = CoreTransfer(
                     info_hash=info_hash,
                     info=info_value,
@@ -359,6 +446,10 @@ def extract_core(
                     torrent_path=torrent_path,
                     trackers=trackers,
                     created_time=created_time,
+                    creation_date=creation_date,
+                    comment=comment,
+                    created_by=created_by,
+                    category=category,
                 )
                 break
             candidate_index -= 1

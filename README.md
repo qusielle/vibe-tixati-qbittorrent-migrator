@@ -19,7 +19,9 @@ qBittorrent verifies existing data before downloading or seeding.
 - Reads Tixati v2 `core2.dat` directly; no `.torrent` export is required.
 - Reconstructs the original bencoded torrent `info` bytes and verifies their
   SHA-1 info hash before writing anything.
-- Preserves tracker URLs found in transfer records.
+- Preserves tracker URLs and torrent-level creation metadata found in transfer
+  records.
+- Carries over Tixati per-transfer categories to qBittorrent categories.
 - Supports exported `.torrent` files and JSON manifests as alternate inputs.
 - Emits atomic output files and an optional minimal `qBittorrent.conf`.
 - Provides a checkout launcher, console script, and importable Python API.
@@ -73,6 +75,9 @@ Important transfer fields include:
 | Field | Meaning |
 | --- | --- |
 | `0x11003` | raw piece-hash bytes |
+| `0x11006` | torrent metadata creation date, type 6 Unix seconds |
+| `0x11007` | torrent comment, type 2 byte string |
+| `0x11008` | torrent creator, type 2 byte string |
 | `0x11009` | torrent v1 info hash |
 | `0x1101e` | original metadata path or a hash-link label |
 | `0x11027` | bencoded info-dictionary prefix |
@@ -81,8 +86,14 @@ Important transfer fields include:
 | `0x12001` | tracker URL |
 
 Unknown fields are ignored. This is intentional: the file contains many
-private fields for UI state, statistics, file metadata, and scheduler data
-whose meanings are not required to produce a valid torrent.
+private fields for UI state, statistics, file metadata, and scheduler data.
+
+The transfer-specific category is stored outside the numeric field stream in
+a small generic settings map. In the observed format, an entry such as
+`d_category` is encoded as a type-2 key followed by a type-2 value. The
+reader scopes this lookup to the matching hash record and writes the value to
+qBittorrent's `qBt-category` resume key. An explicit command-line category
+still takes precedence.
 
 ### Reconstructing an `info` dictionary
 
@@ -125,6 +136,10 @@ file. This matters because bencode dictionary key order is part of the hashed
 byte sequence: decoding and re-encoding a non-canonical dictionary could
 silently change its info hash.
 
+When present, `0x11006`, `0x11007`, and `0x11008` are emitted as the standard
+torrent root keys `creation date`, `comment`, and `created by`. They do not
+affect the info hash because they are outside the `info` dictionary.
+
 ### Transfer dates
 
 Tixati keeps the transfer's Created/Added date in the parent transfer record,
@@ -159,9 +174,9 @@ or a manifest-supplied `added_time`.
   qBittorrent's `added_time`. Standalone exported `.torrent` files have no such
   private field and therefore use the migration time unless the manifest
   supplies `added_time`.
-- Download paths, categories, and other UI state are not assumed to have a
-  stable meaning in the private fields. Supply `--save-path`, `--path-map`, or
-  a manifest as appropriate.
+- Tixati categories are copied when present. Download paths and other UI state
+  are not assumed to have a stable meaning in the private fields; supply
+  `--save-path`, `--path-map`, or a manifest as appropriate.
 - Hash-only/link records without embedded piece metadata are reported and
   skipped rather than turned into unverifiable torrents.
 - v2-only `.torrent` files are rejected by the exported-metadata path because

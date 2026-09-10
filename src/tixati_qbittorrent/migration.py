@@ -592,7 +592,10 @@ def migrate(
                         TransferSpec(
                             torrent_path=torrent.source_path,
                             save_path=_apply_path_maps(save_path or "", path_map_tuple),
-                            category=category,
+                            # An explicit CLI category is an override.  When
+                            # it is empty, retain the category found in
+                            # Tixati's per-transfer generic settings map.
+                            category=category or item.category or "",
                             tags=tag_tuple,
                             paused=paused,
                             content_layout=content_layout,
