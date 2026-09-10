@@ -34,7 +34,8 @@ The reader has four deliberate stages:
 2. `_scan_fields()` locates recognized private fields in the decrypted stream.
    It scans rather than recursively decoding every private object because most
    field IDs are undocumented and some values contain nested serialized data.
-3. `extract_core()` pairs `0x11027` prefixes with `0x11003` piece-hash blobs.
+3. `extract_core()` builds a `_FieldIndex`, then pairs `0x11027` prefixes with
+   `0x11003` piece-hash blobs.
    The `pieces<N>:` suffix gives the required blob length, but the final
    association is always accepted only when `SHA1(prefix + pieces + suffix)`
    matches a `0x11009` info hash. It also reads transfer metadata, counters,
@@ -50,6 +51,12 @@ The recognized field IDs are intentionally centralized in `_scan_fields()`.
 When supporting another Tixati version, first add observations and tests for
 new IDs there; do not silently reinterpret unknown fields in the migration
 layer.
+
+The index is important for large profiles: transfer-region lookups bisect the
+positions for one field ID instead of rebuilding and filtering the entire
+recognized-field list for every transfer. A 220 MiB real profile dropped from
+roughly 94 seconds to roughly 5 seconds in the reference container while
+producing the same 3,253 transfers and 10 skipped hash-only records.
 
 `CoreExtraction.skipped_info_hashes` is part of the safety contract. A record
 without enough verified metadata must remain visible to the caller rather than

@@ -50,6 +50,43 @@ class CoreField:
 
 
 @dataclass(frozen=True)
+class _FieldIndex:
+    """Position indexes used while associating fields with transfer regions.
+
+    The field stream is already emitted in byte order.  The old lookup path
+    rebuilt a list of every field position for each of several lookups per
+    transfer, turning a small binary search into repeated O(field-count)
+    Python work.  Keeping one sorted tuple per field ID preserves the same
+    region boundaries while making each lookup O(log n) plus the matching
+    fields.
+    """
+
+    by_id: dict[int, tuple[CoreField, ...]]
+    positions_by_id: dict[int, tuple[int, ...]]
+
+    @classmethod
+    def build(cls, fields: list[CoreField]) -> _FieldIndex:
+        grouped: dict[int, list[CoreField]] = {}
+        for field in fields:
+            grouped.setdefault(field.field_id, []).append(field)
+        by_id = {field_id: tuple(values) for field_id, values in grouped.items()}
+        return cls(
+            by_id=by_id,
+            positions_by_id={
+                field_id: tuple(field.position for field in values)
+                for field_id, values in by_id.items()
+            },
+        )
+
+    def region(self, start: int, end: int, field_id: int) -> tuple[CoreField, ...]:
+        fields = self.by_id.get(field_id, ())
+        positions = self.positions_by_id.get(field_id, ())
+        left = bisect.bisect_left(positions, start)
+        right = bisect.bisect_left(positions, end)
+        return fields[left:right]
+
+
+@dataclass(frozen=True)
 class CoreTransfer:
     """Torrent metadata reconstructed from one Tixati transfer record."""
 
@@ -262,17 +299,18 @@ def _scan_fields(plaintext: bytes) -> list[CoreField]:
     return fields
 
 
-def _region(fields: list[CoreField], start: int, end: int, field_id: int) -> list[CoreField]:
+def _region(
+    field_index: _FieldIndex, start: int, end: int, field_id: int
+) -> tuple[CoreField, ...]:
     # `_scan_fields` emits fields in byte order. Restricting lookup to the
     # interval between two info-hash records associates paths and trackers with
-    # one transfer without interpreting the rest of Tixati's object graph.
-    positions = [field.position for field in fields]
-    left = bisect.bisect_left(positions, start)
-    right = bisect.bisect_left(positions, end)
-    return [field for field in fields[left:right] if field.field_id == field_id]
+    # one transfer without interpreting the rest of Tixati's object graph. The
+    # index has already grouped positions by ID, so this does not rescan the
+    # complete field stream for every transfer.
+    return field_index.region(start, end, field_id)
 
 
-def _created_time(fields: list[CoreField], start: int, end: int) -> int | None:
+def _created_time(field_index: _FieldIndex, start: int, end: int) -> int | None:
     """Read Tixati's per-transfer Created/Added timestamp, if present.
 
     This is intentionally a narrow interpretation. The surrounding core
@@ -282,36 +320,36 @@ def _created_time(fields: list[CoreField], start: int, end: int) -> int | None:
     unsigned 64-bit Unix timestamp.
     """
 
-    for field in _region(fields, start, end, 0x1103F):
+    for field in _region(field_index, start, end, 0x1103F):
         if field.value_type == 6 and len(field.payload) == 8:
             return int.from_bytes(field.payload, "little")
     return None
 
 
 def _region_integer(
-    fields: list[CoreField], start: int, end: int, field_id: int
+    field_index: _FieldIndex, start: int, end: int, field_id: int
 ) -> int | None:
     """Read one unsigned 64-bit integer field from a transfer region."""
 
-    for field in _region(fields, start, end, field_id):
+    for field in _region(field_index, start, end, field_id):
         if field.value_type == 6 and len(field.payload) == 8:
             return int.from_bytes(field.payload, "little")
     return None
 
 
 def _region_bytes(
-    fields: list[CoreField], start: int, end: int, field_id: int
+    field_index: _FieldIndex, start: int, end: int, field_id: int
 ) -> bytes | None:
     """Read one byte-string field from a transfer region, preserving empties."""
 
-    for field in _region(fields, start, end, field_id):
+    for field in _region(field_index, start, end, field_id):
         if field.value_type == 2:
             return field.payload
     return None
 
 
 def _region_piece_state(
-    fields: list[CoreField], start: int, end: int
+    field_index: _FieldIndex, start: int, end: int
 ) -> tuple[int, ...] | None:
     """Decode Tixati's packed aggregate piece bitmap, when it is valid.
 
@@ -322,7 +360,7 @@ def _region_piece_state(
     guessed into a resume file.
     """
 
-    for field in _region(fields, start, end, 0x1400A):
+    for field in _region(field_index, start, end, 0x1400A):
         if field.value_type != 13 or len(field.payload) < 4:
             continue
         piece_count = int.from_bytes(field.payload[:4], "little")
@@ -523,6 +561,7 @@ def extract_core(
     if progress is not None:
         progress("scanning serialized transfer fields")
     fields = _scan_fields(plaintext)
+    field_index = _FieldIndex.build(fields)
     categories = _category_definitions(plaintext)
     category_locations = {
         category.name: category.save_path
@@ -536,10 +575,8 @@ def extract_core(
         )
     hash_fields = [
         field
-        for field in fields
-        if field.field_id == 0x11009
-        and field.value_type == 2
-        and len(field.payload) == 20
+        for field in field_index.by_id.get(0x11009, ())
+        if field.value_type == 2 and len(field.payload) == 20
     ]
     # The info-hash table is both the transfer index and the integrity check
     # for pairing a prefix with the correct piece-hash blob.
@@ -548,8 +585,8 @@ def extract_core(
 
     piece_fields = [
         field
-        for field in fields
-        if field.field_id == 0x11003 and field.value_type == 2
+        for field in field_index.by_id.get(0x11003, ())
+        if field.value_type == 2
     ]
     pieces_by_length: dict[int, list[CoreField]] = {}
     for field in piece_fields:
@@ -560,14 +597,15 @@ def extract_core(
     }
     prefixes = [
         field
-        for field in fields
-        if field.field_id == 0x11027 and field.value_type == 2
+        for field in field_index.by_id.get(0x11027, ())
+        if field.value_type == 2
     ]
     suffixes = [
         field
-        for field in fields
-        if field.field_id == 0x11028 and field.value_type == 2
+        for field in field_index.by_id.get(0x11028, ())
+        if field.value_type == 2
     ]
+    suffix_positions = [field.position for field in suffixes]
     prefix_positions = [field.position for field in prefixes]
 
     found: dict[bytes, CoreTransfer] = {}
@@ -593,14 +631,13 @@ def extract_core(
         # The suffix is the next 0x11028 field before another info prefix. It
         # commonly contains only `e`, but private keys such as `private` may
         # appear there for some torrents.
-        suffix_candidates = [
-            field
-            for field in suffixes
-            if prefix.position < field.position < next_prefix
-        ]
-        if not suffix_candidates:
+        suffix_index = bisect.bisect_right(suffix_positions, prefix.position)
+        if (
+            suffix_index >= len(suffixes)
+            or suffixes[suffix_index].position >= next_prefix
+        ):
             continue
-        suffix = suffix_candidates[0]
+        suffix = suffixes[suffix_index]
 
         # Usually the closest preceding piece field is exact.  Trying older
         # same-sized candidates as well makes the parser robust around the
@@ -625,8 +662,12 @@ def extract_core(
                     if hash_index + 1 < len(hash_positions)
                     else len(plaintext)
                 )
-                path_fields = _region(fields, hash_field.position, next_hash, 0x1101E)
-                tracker_fields = _region(fields, hash_field.position, next_hash, 0x12001)
+                path_fields = _region(
+                    field_index, hash_field.position, next_hash, 0x1101E
+                )
+                tracker_fields = _region(
+                    field_index, hash_field.position, next_hash, 0x12001
+                )
                 path_value = path_fields[0].payload if path_fields else b""
                 try:
                     torrent_path = path_value.decode("utf-8")
@@ -638,18 +679,18 @@ def extract_core(
                     if b"://" in field.payload
                 )
                 created_time = _created_time(
-                    fields,
+                    field_index,
                     hash_field.position,
                     next_hash,
                 )
                 creation_date = _region_integer(
-                    fields, hash_field.position, next_hash, 0x11006
+                    field_index, hash_field.position, next_hash, 0x11006
                 )
                 comment = _region_bytes(
-                    fields, hash_field.position, next_hash, 0x11007
+                    field_index, hash_field.position, next_hash, 0x11007
                 )
                 created_by = _region_bytes(
-                    fields, hash_field.position, next_hash, 0x11008
+                    field_index, hash_field.position, next_hash, 0x11008
                 )
                 category_value = _generic_string_value(
                     plaintext,
@@ -669,25 +710,25 @@ def extract_core(
                     category_locations.get(category) if category is not None else None
                 )
                 downloaded = _region_integer(
-                    fields, hash_field.position, next_hash, 0x14040
+                    field_index, hash_field.position, next_hash, 0x14040
                 )
                 uploaded = _region_integer(
-                    fields, hash_field.position, next_hash, 0x14041
+                    field_index, hash_field.position, next_hash, 0x14041
                 )
                 downloaded_payload = _region_integer(
-                    fields, hash_field.position, next_hash, 0x14042
+                    field_index, hash_field.position, next_hash, 0x14042
                 )
                 uploaded_payload = _region_integer(
-                    fields, hash_field.position, next_hash, 0x14043
+                    field_index, hash_field.position, next_hash, 0x14043
                 )
                 downloaded_overhead = _region_integer(
-                    fields, hash_field.position, next_hash, 0x14044
+                    field_index, hash_field.position, next_hash, 0x14044
                 )
                 uploaded_overhead = _region_integer(
-                    fields, hash_field.position, next_hash, 0x14045
+                    field_index, hash_field.position, next_hash, 0x14045
                 )
                 piece_state = _region_piece_state(
-                    fields, hash_field.position, next_hash
+                    field_index, hash_field.position, next_hash
                 )
                 found[info_hash] = CoreTransfer(
                     info_hash=info_hash,
