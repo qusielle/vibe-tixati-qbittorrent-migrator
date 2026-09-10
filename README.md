@@ -39,6 +39,18 @@ additional records were hash-only/link entries without piece metadata. Those
 The only runtime dependency is PyCryptodome, used for fast RC4 processing of
 large profiles. A pure-Python fallback is included but is much slower.
 
+Using uv:
+
+```bash
+uv venv
+uv sync
+```
+
+This creates `.venv` using the pinned Python version and installs the project
+plus its development dependencies. Run tests with `uv run pytest`.
+
+Using standard venv/pip:
+
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install .
