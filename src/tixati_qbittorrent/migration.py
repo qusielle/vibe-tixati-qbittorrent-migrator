@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .bencode import BValue, BencodeError, decode, encode
-from .config import write_qbittorrent_conf
+from .config import render_qbittorrent_conf
 from .model import MigrationReport, TransferSpec
 
 
@@ -178,8 +178,8 @@ def _make_fastresume(
                 f"file_priority has {len(spec.file_priority)} entries for "
                 f"{torrent.file_count} torrent files ({torrent.source_path})"
             )
-        if any(priority not in (0, 1, 2, 3, 4) for priority in spec.file_priority):
-            raise MigrationError("file_priority entries must be between 0 and 4")
+        if any(priority not in range(8) for priority in spec.file_priority):
+            raise MigrationError("file_priority entries must be between 0 and 7")
         file_priority = list(spec.file_priority)
 
     pieces = _validate_piece_state(spec.piece_state, torrent.piece_count)
@@ -495,6 +495,8 @@ def migrate(
         )
 
     timestamp = int(time.time()) if now is None else now
+    if content_layout not in {"Original", "Subfolder"}:
+        raise MigrationError("content_layout must be Original or Subfolder")
     prepared = _prepare_specs(specs, now=timestamp)
     destination.mkdir(parents=True, exist_ok=True)
 
@@ -540,11 +542,14 @@ def migrate(
         if generated_settings.exists() and not overwrite:
             raise MigrationError(f"refusing to overwrite existing file {generated_settings}")
         generated_settings.parent.mkdir(parents=True, exist_ok=True)
-        write_qbittorrent_conf(
+        _atomic_write(
             generated_settings,
-            save_path=save_path or "",
-            incomplete_path=incomplete_path,
-            listen_port=listen_port,
+            render_qbittorrent_conf(
+                save_path=save_path or "",
+                incomplete_path=incomplete_path,
+                listen_port=listen_port,
+            ).encode("utf-8"),
+            overwrite=overwrite,
         )
 
     return MigrationReport(
@@ -553,4 +558,3 @@ def migrate(
         output_dir=destination,
         settings_path=generated_settings,
     )
-
