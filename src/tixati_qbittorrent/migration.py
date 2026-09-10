@@ -14,8 +14,9 @@ from typing import Any
 
 from .bencode import BValue, BencodeError, decode, encode, raw_dict_value
 from .config import render_qbittorrent_conf
-from .model import MigrationReport, TransferSpec
+from .model import CategorySpec, MigrationReport, TransferSpec
 from .tixati_core import (
+    CoreCategory,
     CoreExtraction,
     CoreFormatError,
     CoreTransfer,
@@ -489,6 +490,73 @@ def _atomic_write(
         raise MigrationError(f"cannot write {path}: {exc}") from exc
 
 
+def _category_specs(
+    prepared: Iterable[_Prepared],
+    *,
+    core_categories: Iterable[CoreCategory] | None,
+    cli_save_path: str | None,
+    path_maps: Iterable[tuple[str, str]],
+) -> tuple[CategorySpec, ...]:
+    """Build deterministic qBittorrent category registry entries.
+
+    Direct core migrations use the complete Tixati user-category registry, so
+    categories with no currently reconstructable transfer are retained too.
+    Exported-torrent and manifest migrations have no global Tixati category
+    map; in that case only categories actually assigned to prepared entries
+    can be represented.
+    """
+
+    definitions: dict[str, CategorySpec] = {}
+    if core_categories is not None:
+        override = (
+            _apply_path_maps(cli_save_path, path_maps)
+            if cli_save_path is not None
+            else None
+        )
+        for category in core_categories:
+            definitions[category.name] = CategorySpec(
+                name=category.name,
+                save_path=(
+                    override
+                    if override is not None
+                    else _apply_path_maps(category.save_path or "", path_maps)
+                ),
+            )
+
+    for item in prepared:
+        name = item.spec.category
+        if not name:
+            continue
+        candidate = CategorySpec(
+            name=name,
+            save_path=item.spec.save_path,
+            download_path=item.spec.download_path or None,
+        )
+        existing = definitions.get(name)
+        if existing is None:
+            definitions[name] = candidate
+        elif existing != candidate and core_categories is None:
+            raise MigrationError(
+                f"category {name!r} has conflicting paths in the migration input"
+            )
+
+    return tuple(definitions[name] for name in sorted(definitions, key=str.casefold))
+
+
+def _render_categories(categories: Iterable[CategorySpec]) -> bytes:
+    """Render the current qBittorrent ``categories.json`` schema."""
+
+    payload: dict[str, dict[str, str]] = {}
+    for category in categories:
+        item = {"name": category.name, "save_path": category.save_path}
+        if category.download_path:
+            item["download_path"] = category.download_path
+        payload[category.name] = item
+    return (json.dumps(payload, ensure_ascii=False, indent=4, sort_keys=True) + "\n").encode(
+        "utf-8"
+    )
+
+
 def _prepare_specs(
     specs: list[TransferSpec],
     *,
@@ -577,6 +645,7 @@ def migrate(
     skipped_info_hashes: tuple[str, ...] = ()
     direct_core_extraction: CoreExtraction | None = None
     core_pairs: list[tuple[_Torrent, TransferSpec]] | None = None
+    core_categories: tuple[CoreCategory, ...] | None = None
     # Input precedence is explicit: manifests override everything, an explicit
     # torrent source is used as requested, and a local core2.dat is the direct
     # fallback when neither was supplied.
@@ -612,6 +681,7 @@ def migrate(
             skipped_info_hashes = tuple(
                 value.hex() for value in direct_core_extraction.skipped_info_hashes
             )
+            core_categories = direct_core_extraction.categories
             core_pairs = []
             for index, item in enumerate(direct_core_extraction.transfers, start=1):
                 if progress is not None and (index == 1 or index % 250 == 0):
@@ -681,6 +751,14 @@ def migrate(
         else _prepare_specs(specs, now=timestamp, progress=progress)
     )
     _notify(progress, f"prepared {len(prepared)} transfer entries")
+    categories = _category_specs(
+        prepared,
+        core_categories=core_categories,
+        cli_save_path=save_path,
+        path_maps=path_map_tuple,
+    )
+    if categories:
+        _notify(progress, f"prepared {len(categories)} category definitions")
     try:
         destination.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
@@ -701,6 +779,9 @@ def migrate(
             if settings_path is not None
             else profile_dir / "qBittorrent.conf"
         )
+    categories_path = profile_dir / "categories.json" if categories else None
+    if categories_path is not None:
+        planned_paths.append(categories_path)
     if not overwrite:
         conflicts = [path for path in planned_paths if path.exists()]
         if conflicts:
@@ -749,11 +830,22 @@ def migrate(
         )
         _notify(progress, f"wrote settings {generated_settings}")
 
+    generated_categories: Path | None = None
+    if categories_path is not None:
+        generated_categories = categories_path
+        _atomic_write(
+            generated_categories,
+            _render_categories(categories),
+            overwrite=overwrite,
+        )
+        _notify(progress, f"wrote categories {generated_categories}")
+
     return MigrationReport(
         torrent_count=len(prepared),
         fastresume_count=len(prepared),
         output_dir=profile_dir,
         settings_path=generated_settings,
+        categories_path=generated_categories,
         skipped_count=len(skipped_info_hashes),
         skipped_info_hashes=skipped_info_hashes,
     )

@@ -106,11 +106,33 @@ class CoreTransfer:
 
 
 @dataclass(frozen=True)
+class CoreCategory:
+    """One user-defined category from Tixati's global category map.
+
+    ``category_type`` is retained because Tixati also stores virtual status
+    views (All Transfers, Seeding, and so on) in the same map.  Only type 0
+    entries are user categories and therefore candidates for qBittorrent's
+    ``categories.json`` registry.
+    """
+
+    name: str
+    category_type: int
+    # ``dlloc`` is the observed category download location.  It is the only
+    # category path with a stable, direct qBittorrent save-path equivalent.
+    save_path: str | None = None
+    # Keep the other serialized path available to reverse-engineering callers;
+    # its meaning (and whether it is a seed or secondary location) is not
+    # sufficiently established to write it into qBittorrent automatically.
+    secondary_path: str | None = None
+
+
+@dataclass(frozen=True)
 class CoreExtraction:
     """Successful transfers plus hash-only records that were not convertible."""
 
     transfers: tuple[CoreTransfer, ...]
     skipped_info_hashes: tuple[bytes, ...]
+    categories: tuple[CoreCategory, ...] = ()
 
 
 def _rc4(data: bytes, key: bytes = CORE_KEY) -> bytes:
@@ -416,35 +438,79 @@ def _type12_path(payload: bytes) -> str | None:
     return "/" + "/".join(components)
 
 
-def _category_locations(plaintext: bytes) -> dict[str, str]:
-    """Find Tixati category download locations from global category maps."""
+def _category_definitions(plaintext: bytes) -> tuple[CoreCategory, ...]:
+    """Read user categories from Tixati's global generic settings maps.
+
+    The built-in status views use the same serialization but have
+    ``cattype`` values 1 and above.  qBittorrent categories are user-created
+    labels, so exporting those virtual views would create misleading empty
+    categories.  Malformed or unnamed maps are ignored just like other
+    unrecognized private fields.
+    """
 
     key = b"cattype"
     marker = struct.pack("<I", len(key) + 1) + b"\x02" + key
-    locations: dict[str, str] = {}
+    categories: dict[str, CoreCategory] = {}
     position = 0
     while True:
         position = plaintext.find(marker, position)
         if position < 0:
             break
         entries = _generic_map(plaintext, position, len(plaintext))
+        category_type_entry = entries.get(b"cattype")
         name_entry = entries.get(b"name")
-        location_entry = entries.get(b"dlloc")
         if (
-            name_entry is not None
-            and name_entry[0] == 2
-            and location_entry is not None
-            and location_entry[0] == 12
+            category_type_entry is None
+            or category_type_entry[0] != 3
+            or len(category_type_entry[1]) != 4
+            or name_entry is None
+            or name_entry[0] != 2
         ):
-            try:
-                name = name_entry[1].decode("utf-8")
-            except UnicodeDecodeError:
-                name = ""
-            path = _type12_path(location_entry[1])
-            if name and path:
-                locations[name] = path
+            position += len(marker)
+            continue
+        category_type = int.from_bytes(category_type_entry[1], "little")
+        if category_type != 0:
+            position += len(marker)
+            continue
+        try:
+            name = name_entry[1].decode("utf-8")
+        except UnicodeDecodeError:
+            name = ""
+        location_entry = entries.get(b"dlloc")
+        secondary_entry = entries.get(b"sdloc")
+        save_path = (
+            _type12_path(location_entry[1])
+            if location_entry is not None and location_entry[0] == 12
+            else None
+        )
+        secondary_path = (
+            _type12_path(secondary_entry[1])
+            if secondary_entry is not None and secondary_entry[0] == 12
+            else None
+        )
+        if name:
+            categories[name] = CoreCategory(
+                name=name,
+                category_type=category_type,
+                save_path=save_path,
+                secondary_path=secondary_path,
+            )
         position += len(marker)
-    return locations
+    return tuple(categories.values())
+
+
+def _category_locations(plaintext: bytes) -> dict[str, str]:
+    """Return non-empty ``dlloc`` values for transfer-level path lookup.
+
+    Kept as a small compatibility helper for the transfer parser; the full
+    category definitions are also returned in :class:`CoreExtraction`.
+    """
+
+    return {
+        category.name: category.save_path
+        for category in _category_definitions(plaintext)
+        if category.save_path
+    }
 
 
 def extract_core(
@@ -457,11 +523,16 @@ def extract_core(
     if progress is not None:
         progress("scanning serialized transfer fields")
     fields = _scan_fields(plaintext)
-    category_locations = _category_locations(plaintext)
+    categories = _category_definitions(plaintext)
+    category_locations = {
+        category.name: category.save_path
+        for category in categories
+        if category.save_path
+    }
     if progress is not None:
         progress(
             f"found {len(fields)} relevant fields and "
-            f"{len(category_locations)} category locations"
+            f"{len(categories)} user categories"
         )
     hash_fields = [
         field
@@ -660,7 +731,11 @@ def extract_core(
             f"{created_count} Created timestamps recovered; "
             f"{len(skipped)} records skipped"
         )
-    return CoreExtraction(transfers=transfers, skipped_info_hashes=skipped)
+    return CoreExtraction(
+        transfers=transfers,
+        skipped_info_hashes=skipped,
+        categories=categories,
+    )
 
 
 def extract_core_file(

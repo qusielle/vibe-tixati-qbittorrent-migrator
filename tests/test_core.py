@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import struct
 from pathlib import Path
 
@@ -120,6 +121,10 @@ def test_core_decrypts_and_reconstructs_torrent(tmp_path: Path) -> None:
     assert transfer.created_by == b"fixture creator"
     assert transfer.category == "fixture-category"
     assert transfer.category_path == "/home/fixture"
+    assert len(extraction.categories) == 1
+    assert extraction.categories[0].name == "fixture-category"
+    assert extraction.categories[0].category_type == 0
+    assert extraction.categories[0].save_path == "/home/fixture"
     assert transfer.total_downloaded == 1_500
     assert transfer.total_uploaded == 2_500
     assert transfer.downloaded_payload == 1_400
@@ -148,6 +153,7 @@ def test_migrate_uses_core_when_no_torrent_source_is_given(tmp_path: Path) -> No
     assert report.torrent_count == 1
     assert report.skipped_count == 1
     assert report.output_dir == profile
+    assert report.categories_path == profile / "categories.json"
     destination = profile / "BT_backup"
     stem = next(path.stem for path in destination.glob("*.torrent"))
     resume = decode((destination / f"{stem}.fastresume").read_bytes())
@@ -160,3 +166,10 @@ def test_migrate_uses_core_when_no_torrent_source_is_given(tmp_path: Path) -> No
     assert resume[b"save_path"] == b"/home/fixture"
     assert resume[b"total_downloaded"] == 1_500
     assert resume[b"total_uploaded"] == 2_500
+    categories = json.loads((profile / "categories.json").read_text(encoding="utf-8"))
+    assert categories == {
+        "fixture-category": {
+            "name": "fixture-category",
+            "save_path": "/home/fixture",
+        }
+    }

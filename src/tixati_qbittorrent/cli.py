@@ -129,4 +129,6 @@ def main(argv: list[str] | None = None) -> int:
         print("skipped info hashes: " + ", ".join(report.skipped_info_hashes))
     if report.settings_path is not None:
         print(f"settings: {report.settings_path}")
+    if report.categories_path is not None:
+        print(f"categories: {report.categories_path}")
     return 0

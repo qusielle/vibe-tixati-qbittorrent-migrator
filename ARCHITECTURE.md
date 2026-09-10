@@ -16,7 +16,8 @@ CLI / Python API
 
 all inputs ──> _Torrent ──> _Prepared ──> conflict check ──> atomic writes
                                                                │
-                                               profile/BT_backup + profile/qBittorrent.conf
+                                  profile/BT_backup + profile/categories.json
+                                  + optional profile/qBittorrent.conf
 ```
 
 `migration.py` owns qBittorrent output semantics. `tixati_core.py` owns only
@@ -39,7 +40,8 @@ The reader has four deliberate stages:
    matches a `0x11009` info hash. It also reads transfer metadata, counters,
    the `0x1103f` Created/Added timestamp, and the packed `0x1400a` piece state
    from the same transfer region. Global category maps are scanned separately
-   so `d_category` can be paired with its `dlloc` path.
+   so `d_category` can be paired with its `dlloc` path and the user-category
+   registry can be emitted independently of the transfer list.
 4. `CoreTransfer.torrent_bytes` wraps the verified raw info dictionary in a
    root torrent dictionary. It embeds `info_bytes` directly rather than using
    `encode(info)`, because bencode key order is part of the info hash.
@@ -68,15 +70,17 @@ replaced with `os.replace()`.
 The generated resume state is intentionally conservative. Tixati's private
 piece-completion and path fields are interpreted only when their serialized
 shape is unambiguous. The aggregate piece bitmap is expanded into qBittorrent
-resume bytes, and a category `dlloc` becomes the default save path. Explicit
-CLI paths and path maps still override those values. Transfers remain paused
-unless requested otherwise so qBittorrent can safely recheck the data. The
-transfer timestamp is passed through `TransferSpec.added_time` and is also
-applied to both generated file mtimes.
+resume bytes, and a category `dlloc` becomes the default save path. The complete
+user-category map is rendered to `categories.json`; built-in Tixati status views
+are excluded. Explicit CLI paths and path maps still override those values.
+Transfers remain paused unless requested otherwise so qBittorrent can safely
+recheck the data. The transfer timestamp is passed through
+`TransferSpec.added_time` and is also applied to both generated file mtimes.
 
 The public `output_dir` argument is always the qBittorrent profile root. The
 writer creates `output_dir/BT_backup` for transfer pairs and, when requested,
-`output_dir/qBittorrent.conf`; it does not interpret the argument as an
+`output_dir/qBittorrent.conf` and, when categories exist,
+`output_dir/categories.json`; it does not interpret the argument as an
 already-created `BT_backup` directory.
 
 ## Extending the project safely

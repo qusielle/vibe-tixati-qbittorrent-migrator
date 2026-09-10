@@ -7,6 +7,15 @@ from pathlib import Path
 
 
 @dataclass(frozen=True)
+class CategorySpec:
+    """qBittorrent category registry entry to write to ``categories.json``."""
+
+    name: str
+    save_path: str = ""
+    download_path: str | None = None
+
+
+@dataclass(frozen=True)
 class TransferSpec:
     """One torrent plus qBittorrent-specific resume settings.
 
@@ -41,5 +50,6 @@ class MigrationReport:
     fastresume_count: int
     output_dir: Path
     settings_path: Path | None = None
+    categories_path: Path | None = None
     skipped_count: int = 0
     skipped_info_hashes: tuple[str, ...] = ()

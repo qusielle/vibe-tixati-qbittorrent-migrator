@@ -9,6 +9,7 @@ directory:
 ```text
 BT_backup/<info-hash>.torrent
 BT_backup/<info-hash>.fastresume
+categories.json                 # when categories are present
 ```
 
 Tracker URLs are retained when present. Generated resume data is deliberately
@@ -22,7 +23,8 @@ source bitmap validates; otherwise qBittorrent receives unchecked pieces.
   SHA-1 info hash before writing anything.
 - Preserves tracker URLs and torrent-level creation metadata found in transfer
   records.
-- Carries over Tixati per-transfer categories to qBittorrent categories.
+- Carries over Tixati user categories to qBittorrent's `categories.json` and
+  assigns each transfer its original category.
 - Uses a Tixati category's download location as the default save path when no
   explicit save path is supplied.
 - Sets each generated `.torrent` and `.fastresume` mtime to its
@@ -106,6 +108,36 @@ a small generic settings map. In the observed format, an entry such as
 reader scopes this lookup to the matching hash record and writes the value to
 qBittorrent's `qBt-category` resume key. An explicit command-line category
 still takes precedence.
+
+Global category definitions use the same generic key/value encoding. A
+user-defined entry begins with `cattype = 0` and normally contains `name` and
+`dlloc` values; built-in status views such as `Seeding` use other `cattype`
+values and are not exported as user categories. The path-list value used by
+`dlloc` is encoded as a component count followed by typed strings:
+
+```text
+cattype: type 3, value 0
+name:    type 2, value "music"
+dlloc:   type 12, value ["srv", "downloads", "music"]
+```
+
+The corresponding current qBittorrent category registry entry is:
+
+```json
+{
+    "music": {
+        "name": "music",
+        "save_path": "/srv/downloads/music"
+    }
+}
+```
+
+The generated registry uses qBittorrent's current snake-case keys. qBittorrent
+releases before 4.4 used the older `savePath` spelling, so those releases may
+need the key renamed after migration. Tixati's separate `sdloc` path and
+category seeding-policy values are retained by the reader for inspection but
+are not written to qBittorrent because their semantics do not have a safe
+one-to-one destination.
 
 ### Reconstructing an `info` dictionary
 
@@ -235,10 +267,12 @@ the date in tools that inspect file metadata rather than bencode.
   private field and therefore use the migration time unless the manifest
   supplies `added_time`.
 - Tixati categories are copied when present. Download paths and other UI state
-  are copied when their category definition supplies a location. Because that
-  location may belong to another machine, use `--save-path` or `--path-map`
-  when migrating between systems; a manifest remains available for per-torrent
-  overrides.
+  are copied when their category definition supplies a `dlloc` location. The
+  category registry is written to `output_dir/categories.json`, while each
+  resume file also receives the resolved per-torrent `qBt-savePath`. Because
+  that location may belong to another machine, use `--save-path` or
+  `--path-map` when migrating between systems; a manifest remains available
+  for per-torrent overrides.
 - Hash-only/link records without embedded piece metadata are reported and
   skipped rather than turned into unverifiable torrents.
 - v2-only `.torrent` files are rejected by the exported-metadata path because
