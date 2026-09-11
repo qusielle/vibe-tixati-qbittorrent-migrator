@@ -62,5 +62,7 @@ class MigrationReport:
     output_dir: Path
     settings_path: Path | None = None
     categories_path: Path | None = None
+    watched_folders_path: Path | None = None
+    metadata_path: Path | None = None
     skipped_count: int = 0
     skipped_info_hashes: tuple[str, ...] = ()

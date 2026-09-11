@@ -568,6 +568,112 @@ def _render_categories(categories: Iterable[CategorySpec]) -> bytes:
     )
 
 
+def _render_watched_folders(paths: Iterable[str]) -> bytes:
+    """Render qBittorrent's current ``watched_folders.json`` schema.
+
+    Tixati's observed profile does not contain category associations for
+    watched folders. The generated watcher entries therefore use qBittorrent's
+    normal automatic-management defaults and leave category/tags empty.
+    """
+
+    payload: dict[str, dict[str, object]] = {}
+    for path in paths:
+        payload[path] = {
+            "add_torrent_params": {
+                "category": "",
+                "content_layout": "Original",
+                "download_limit": -1,
+                "download_path": "",
+                "operating_mode": "AutoManaged",
+                "ratio_limit": -2,
+                "save_path": "",
+                "seeding_time_limit": -2,
+                "skip_checking": False,
+                "stopped": False,
+                "tags": [],
+                "upload_limit": -1,
+                "use_auto_tmm": True,
+            },
+            "recursive": False,
+        }
+    return (json.dumps(payload, ensure_ascii=False, indent=4, sort_keys=True) + "\n").encode(
+        "utf-8"
+    )
+
+
+def _render_migration_metadata(
+    *,
+    source_dir: Path,
+    categories: Iterable[CoreCategory] | None,
+    settings: TixatiSettings | None,
+    watched_folders: Iterable[str],
+) -> bytes | None:
+    """Render source facts that qBittorrent cannot represent directly.
+
+    This is intentionally JSON rather than another private binary format. It
+    gives a human or future importer a loss-minimizing record of decisions
+    made during migration without copying credentials from the source proxy
+    registry or dumping opaque multi-megabyte databases.
+    """
+
+    payload: dict[str, object] = {
+        "format": 1,
+        "source": str(source_dir),
+    }
+    category_values: dict[str, dict[str, object]] = {}
+    if categories is not None:
+        for category in categories:
+            item: dict[str, object] = {}
+            for key, value in (
+                ("save_path", category.save_path),
+                ("secondary_path", category.secondary_path),
+                ("seed_count_stop", category.seed_count_stop),
+                ("seeding_ratio_stop", category.seeding_ratio_stop),
+                ("seeding_minutes_stop", category.seeding_minutes_stop),
+            ):
+                if value is not None:
+                    item[key] = value
+            category_values[category.name] = item
+    if category_values:
+        payload["categories"] = category_values
+    watched = tuple(watched_folders)
+    if watched:
+        payload["watched_folders"] = list(watched)
+
+    if settings is not None:
+        setting_values: dict[str, object] = {}
+        for source_name, output_name in (
+            ("readthrottle_mode", "read_throttle_mode"),
+            ("readthrottle_rate", "read_throttle_rate"),
+            ("writethrottle_mode", "write_throttle_mode"),
+            ("writethrottle_rate", "write_throttle_rate"),
+        ):
+            value = settings.get(source_name)
+            if isinstance(value, (int, float)):
+                setting_values[output_name] = value
+        quotas = settings.get_entry("bwquotas")
+        if quotas is not None and isinstance(quotas.value, bytes):
+            setting_values["bandwidth_quotas_hex"] = quotas.value.hex()
+        if setting_values:
+            payload["unmapped_settings"] = setting_values
+        opaque_files = [
+            name
+            for name in ("bwpresets2.dat", "autothrottle2.dat", "scheduler2.dat")
+            if (source_dir / name).is_file()
+        ]
+        if opaque_files:
+            payload["opaque_settings_files"] = {
+                "not_decoded": opaque_files,
+                "reason": "these files use per-file runtime keys not yet validated",
+            }
+
+    if len(payload) == 2:
+        return None
+    return (json.dumps(payload, ensure_ascii=False, indent=4, sort_keys=True) + "\n").encode(
+        "utf-8"
+    )
+
+
 def _prepare_specs(
     specs: list[TransferSpec],
     *,
@@ -652,6 +758,7 @@ def migrate(
     path_map_tuple = tuple(path_maps)
     tag_tuple = tuple(tags)
     source_settings: TixatiSettings | None = None
+    watched_folders: tuple[str, ...] = ()
     if write_settings:
         settings_file = source_dir / "settings2.dat"
         if settings_file.is_file():
@@ -662,6 +769,12 @@ def migrate(
                     f"cannot reverse-engineer {settings_file}: {exc}"
                 ) from exc
             _notify(progress, f"decoded {len(source_settings.entries)} Tixati settings")
+            watched_folders = tuple(
+                _apply_path_maps(path, path_map_tuple)
+                for path in source_settings.watched_folder_paths()
+            )
+            if watched_folders:
+                _notify(progress, f"found {len(watched_folders)} watched folders")
 
     skipped_info_hashes: tuple[str, ...] = ()
     direct_core_extraction: CoreExtraction | None = None
@@ -748,7 +861,10 @@ def migrate(
                             # it is empty, retain the category found in
                             # Tixati's per-transfer generic settings map.
                             category=transfer_category,
-                            tags=tag_tuple,
+                            # A CLI tag list is an explicit override; an
+                            # absent override preserves tags decoded from the
+                            # transfer's typed Tixati settings map.
+                            tags=tag_tuple or item.tags,
                             paused=paused,
                             content_layout=content_layout,
                             added_time=item.created_time,
@@ -820,6 +936,16 @@ def migrate(
     )
     if categories:
         _notify(progress, f"prepared {len(categories)} category definitions")
+    watched_folders_path = profile_dir / "watched_folders.json" if watched_folders else None
+    metadata_bytes = _render_migration_metadata(
+        source_dir=source_dir,
+        categories=core_categories,
+        settings=source_settings,
+        watched_folders=watched_folders,
+    )
+    metadata_path = profile_dir / "tixati-migration.json" if metadata_bytes else None
+    if metadata_path is not None:
+        _notify(progress, f"prepared migration metadata {metadata_path}")
     try:
         destination.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
@@ -843,6 +969,10 @@ def migrate(
     categories_path = profile_dir / "categories.json" if categories else None
     if categories_path is not None:
         planned_paths.append(categories_path)
+    if watched_folders_path is not None:
+        planned_paths.append(watched_folders_path)
+    if metadata_path is not None:
+        planned_paths.append(metadata_path)
     if not overwrite:
         conflicts = [path for path in planned_paths if path.exists()]
         if conflicts:
@@ -910,12 +1040,34 @@ def migrate(
         )
         _notify(progress, f"wrote categories {generated_categories}")
 
+    generated_watched_folders: Path | None = None
+    if watched_folders_path is not None:
+        generated_watched_folders = watched_folders_path
+        _atomic_write(
+            generated_watched_folders,
+            _render_watched_folders(watched_folders),
+            overwrite=overwrite,
+        )
+        _notify(progress, f"wrote watched folders {generated_watched_folders}")
+
+    generated_metadata: Path | None = None
+    if metadata_path is not None and metadata_bytes is not None:
+        generated_metadata = metadata_path
+        _atomic_write(
+            generated_metadata,
+            metadata_bytes,
+            overwrite=overwrite,
+        )
+        _notify(progress, f"wrote migration metadata {generated_metadata}")
+
     return MigrationReport(
         torrent_count=len(prepared),
         fastresume_count=len(prepared),
         output_dir=profile_dir,
         settings_path=generated_settings,
         categories_path=generated_categories,
+        watched_folders_path=generated_watched_folders,
+        metadata_path=generated_metadata,
         skipped_count=len(skipped_info_hashes),
         skipped_info_hashes=skipped_info_hashes,
     )

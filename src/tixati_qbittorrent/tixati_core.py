@@ -109,6 +109,11 @@ class CoreTransfer:
     comment: bytes | None = None
     created_by: bytes | None = None
     category: str | None = None
+    # Tixati's v2 core does not consistently persist tags. When a future
+    # profile contains a clearly typed per-transfer tag list under one of the
+    # observed candidate keys, keep it here rather than mistaking arbitrary
+    # torrent text containing the word "tag" for a user tag.
+    tags: tuple[str, ...] = ()
     # `category_path` comes from the category definition's serialized `dlloc`
     # path and is only a default; migration path maps may rewrite it.
     category_path: str | None = None
@@ -436,6 +441,53 @@ def _generic_value(
     return plaintext[value_header + 4], plaintext[value_header + 5 : value_end]
 
 
+def _generic_tags(plaintext: bytes, start: int, end: int) -> tuple[str, ...]:
+    """Read a typed per-transfer tag list when Tixati has persisted one.
+
+    The current real profile has no matching key. Candidate names are kept
+    deliberately narrow and values must be either one UTF-8 string or a
+    type-12 list made entirely from UTF-8 strings; this prevents a coincidental
+    occurrence of ``tag`` inside a torrent comment from becoming a qB tag.
+    """
+
+    for key in (b"d_tag", b"d_tags", b"tags"):
+        value = _generic_value(plaintext, start, end, key)
+        if value is None:
+            continue
+        value_type, payload = value
+        if value_type == 2:
+            try:
+                tag = payload.decode("utf-8")
+            except UnicodeDecodeError:
+                continue
+            return (tag,) if tag else ()
+        if value_type != 12 or len(payload) < 4:
+            continue
+        count = int.from_bytes(payload[:4], "little")
+        position = 4
+        tags: list[str] = []
+        valid = True
+        for _ in range(count):
+            if position + 5 > len(payload):
+                valid = False
+                break
+            length = int.from_bytes(payload[position : position + 4], "little")
+            item_type = payload[position + 4]
+            value_end = position + 4 + length
+            if length < 1 or item_type != 2 or value_end > len(payload):
+                valid = False
+                break
+            try:
+                tags.append(payload[position + 5 : value_end].decode("utf-8"))
+            except UnicodeDecodeError:
+                valid = False
+                break
+            position = value_end
+        if valid and position == len(payload):
+            return tuple(tag for tag in tags if tag)
+    return ()
+
+
 def _generic_map(plaintext: bytes, start: int, end: int) -> dict[bytes, tuple[int, bytes]]:
     """Read consecutive key/value entries beginning at a generic-map key."""
 
@@ -759,6 +811,11 @@ def extract_core(
                     )
                 except UnicodeDecodeError:
                     category = category_value.decode("utf-8", "replace")
+                tags = _generic_tags(
+                    plaintext,
+                    hash_field.position,
+                    next_hash,
+                )
                 category_path = (
                     category_locations.get(category) if category is not None else None
                 )
@@ -795,6 +852,7 @@ def extract_core(
                     comment=comment,
                     created_by=created_by,
                     category=category,
+                    tags=tags,
                     category_path=category_path,
                     total_downloaded=downloaded or 0,
                     total_uploaded=uploaded or 0,

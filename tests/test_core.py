@@ -48,6 +48,13 @@ def _generic_value(key: bytes, value_type: int, payload: bytes) -> bytes:
     )
 
 
+def _generic_string_list(key: bytes, values: tuple[bytes, ...]) -> bytes:
+    payload = [struct.pack("<I", len(values))]
+    for value in values:
+        payload.extend((struct.pack("<I", len(value) + 1), b"\x02", value))
+    return _generic_value(key, 12, b"".join(payload))
+
+
 def _fixture_core(*, complete: bool = False) -> bytes:
     pieces = bytes(range(40))
     # Deliberately keep a non-canonical key order.  The real profile contains
@@ -98,6 +105,7 @@ def _fixture_core(*, complete: bool = False) -> bytes:
             _field(0x14045, 6, struct.pack("<Q", 200)),
             _field(0x1400A, 13, struct.pack("<I", 2) + (b"\xc0" if complete else b"\x80")),
             _generic_string(b"d_category", b"fixture-category"),
+            _generic_string_list(b"d_tags", (b"one", b"two")),
             # A hash-only record, analogous to Tixati's hash-link entries.
             _field(0x11009, 2, b"x" * 20),
             _field(0x1101E, 2, b"hash-link: x"),
@@ -127,6 +135,7 @@ def test_core_decrypts_and_reconstructs_torrent(tmp_path: Path) -> None:
     assert transfer.comment == b"fixture comment"
     assert transfer.created_by == b"fixture creator"
     assert transfer.category == "fixture-category"
+    assert transfer.tags == ("one", "two")
     assert transfer.category_path == "/home/fixture"
     assert len(extraction.categories) == 1
     assert extraction.categories[0].name == "fixture-category"
@@ -179,9 +188,13 @@ def test_migrate_uses_core_when_no_torrent_source_is_given(tmp_path: Path) -> No
     assert resume[b"qBt-ratioLimit"] == 10
     assert resume[b"qBt-seedingTimeLimit"] == 60
     assert resume[b"qBt-category"] == b"fixture-category"
+    assert resume[b"qBt-tags"] == [b"one", b"two"]
     assert resume[b"save_path"] == b"/home/fixture"
     assert resume[b"total_downloaded"] == 1_500
     assert resume[b"total_uploaded"] == 2_500
+    assert report.metadata_path == profile / "tixati-migration.json"
+    metadata = json.loads(report.metadata_path.read_text(encoding="utf-8"))
+    assert metadata["categories"]["fixture-category"]["seed_count_stop"] is True
     categories = json.loads((profile / "categories.json").read_text(encoding="utf-8"))
     assert categories == {
         "fixture-category": {

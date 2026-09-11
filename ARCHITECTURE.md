@@ -18,6 +18,8 @@ all inputs ──> _Torrent ──> _Prepared ──> conflict check ──> ato
                                                                │
                                   profile/BT_backup + profile/categories.json
                                   + optional profile/qBittorrent.conf
+                                  + optional profile/watched_folders.json
+                                  + optional profile/tixati-migration.json
 ```
 
 `migration.py` owns qBittorrent output semantics. `tixati_core.py` owns only
@@ -80,7 +82,9 @@ are kept in a migration metadata artifact rather than being mapped to a
 different control by guesswork. Explicit CLI arguments override imported
 values. Settings import is opt-in through `--write-settings`, so a normal
 torrent migration never unexpectedly changes a qBittorrent profile's global
-preferences.
+preferences. The migration layer separately emits JSON metadata for source
+settings and category controls that qBittorrent cannot represent, without
+copying proxy credentials into that metadata.
 
 ## `migration.py`
 
@@ -110,7 +114,10 @@ The public `output_dir` argument is always the qBittorrent profile root. The
 writer creates `output_dir/BT_backup` for transfer pairs and, when requested,
 `output_dir/qBittorrent.conf` and, when categories exist,
 `output_dir/categories.json`; it does not interpret the argument as an
-already-created `BT_backup` directory.
+already-created `BT_backup` directory. If the source contains explicitly named
+watched-folder paths, they are written to `watched_folders.json`; category
+secondary paths, unsupported automation, disk throttles, and opaque quota
+records go to `tixati-migration.json`.
 
 ## Extending the project safely
 

@@ -10,6 +10,8 @@ directory:
 BT_backup/<info-hash>.torrent
 BT_backup/<info-hash>.fastresume
 categories.json                 # when categories are present
+tixati-migration.json           # source-only settings and automation metadata
+watched_folders.json            # when named watched folders are present
 ```
 
 Tracker URLs are retained when present. Generated resume data is deliberately
@@ -143,6 +145,11 @@ written to qBittorrent because their semantics do not have a safe one-to-one
 destination. A category ratio stop is converted to qBittorrent's per-torrent
 ratio limit, and a positive category seeding-minutes stop is converted to
 qBittorrent's per-torrent seeding-time limit.
+
+When direct core migration finds category fields that do not have a safe
+qBittorrent equivalent, `tixati-migration.json` records the original category
+paths and automation values. It is an informational companion file, not a
+qBittorrent configuration file.
 
 ### Reconstructing an `info` dictionary
 
@@ -352,6 +359,14 @@ but are not silently written into qBittorrent's unrelated disk-cache controls.
 - Tixati tags and watched-folder paths are imported only when their serialized
   values are present and unambiguous. The sample profiles examined so far
   contain no persisted watched-folder path or per-transfer tag assignment.
+- Named watched folders are written using qBittorrent's
+  `watched_folders.json` format. The watcher entries use automatic management
+  with empty category and tag fields when Tixati does not persist an
+  association that can be decoded safely.
+- Tixati bandwidth-quota records are preserved as authenticated hexadecimal
+  source data in `tixati-migration.json`. The quota/preset databases use
+  opaque runtime-keyed structures and are not converted into guessed global
+  or scheduler limits.
 - v2-only `.torrent` files are rejected by the exported-metadata path because
   the generated qBittorrent layout is keyed by a v1 info hash.
 

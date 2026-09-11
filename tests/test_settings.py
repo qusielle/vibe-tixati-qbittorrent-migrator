@@ -145,6 +145,17 @@ def test_nested_proxy_registry_and_network_mappings() -> None:
     assert "WriteThrottleRate=100000" in rendered
 
 
+def test_watched_folder_paths_ignore_recent_folder_history() -> None:
+    settings = TixatiSettings(
+        (
+            TixatiSetting("mrufolders", None, 12, _path("home", "recent")),
+            TixatiSetting("watchedfolder", None, 12, _path("srv", "watch")),
+        )
+    )
+
+    assert settings.watched_folder_paths() == ("/srv/watch",)
+
+
 def test_settings_reader_rejects_bad_integrity(tmp_path: Path) -> None:
     source = tmp_path / "settings2.dat"
     _settings_file(source)

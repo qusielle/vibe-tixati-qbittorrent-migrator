@@ -171,6 +171,39 @@ class TixatiSettings:
                 )
         return result
 
+    def watched_folder_paths(self) -> tuple[str, ...]:
+        """Return explicitly named watched-folder paths, if present.
+
+        Tixati profiles do not always persist watched-folder configuration in
+        ``settings2.dat``.  This method intentionally ignores recent-folder
+        history such as ``mrufolders`` and accepts only setting names that
+        identify both a watcher and a folder.  It supports either one path or
+        a type-12 list of nested path values.
+        """
+
+        paths: set[str] = set()
+        for entry in self.named():
+            name = entry.name or ""
+            lowered = name.casefold()
+            if "watch" not in lowered or "folder" not in lowered:
+                continue
+            if entry.value_type != 12:
+                continue
+            direct = _decode_path(entry.payload)
+            if direct:
+                paths.add(direct)
+                continue
+            try:
+                items = _typed_items(entry.payload)
+            except SettingsFormatError:
+                continue
+            for value_type, payload in items:
+                if value_type == 12:
+                    path = _decode_path(payload)
+                    if path:
+                        paths.add(path)
+        return tuple(sorted(paths, key=str.casefold))
+
 
 def decrypt_settings(path: str | Path, *, progress: Progress | None = None) -> bytes:
     """Decrypt and authenticate a version-2 ``settings2.dat`` file."""

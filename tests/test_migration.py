@@ -42,7 +42,7 @@ def _write_torrent(path: Path, *, multi_file: bool = False) -> bytes:
     return sha1(encode(info)).digest()
 
 
-def _write_settings(path: Path) -> None:
+def _write_settings(path: Path, *, watched: bool = False) -> None:
     def entry(name: str, value_type: int, payload: bytes) -> bytes:
         key = name.encode("utf-8")
         return (
@@ -54,14 +54,18 @@ def _write_settings(path: Path) -> None:
             + payload
         )
 
-    entries = b"".join(
-        (
-            entry("incport", 3, struct.pack("<I", 15363)),
-            entry("incpath", 12, b"\x02\x00\x00\x00\x05\x00\x00\x00\x02home"
-                  b"\x07\x00\x00\x00\x02kasumi"),
+    values = [
+        entry("incport", 3, struct.pack("<I", 15363)),
+        entry("incpath", 12, b"\x02\x00\x00\x00\x05\x00\x00\x00\x02home"
+              b"\x07\x00\x00\x00\x02kasumi"),
+    ]
+    if watched:
+        values.append(
+            entry("watchedfolder", 12, b"\x02\x00\x00\x00\x04\x00\x00\x00\x02srv"
+                  b"\x06\x00\x00\x00\x02watch")
         )
-    )
-    payload = struct.pack("<I", 2) + entries
+    entries = b"".join(values)
+    payload = struct.pack("<I", len(values)) + entries
     plaintext = struct.pack("<IB", len(payload) + 1, 11) + payload
     path.write_bytes(
         b"\x02\x00\x00\x00"
@@ -279,3 +283,24 @@ def test_tixati_settings_are_imported_and_path_mapped(tmp_path: Path) -> None:
     assert "Downloads\\SavePath=/srv" in settings
     assert "Session\\DefaultSavePath=/srv" in settings
     assert "Session\\Port=15363" in settings
+
+
+def test_named_watched_folder_is_written_in_qb_schema(tmp_path: Path) -> None:
+    tixati = tmp_path / "tixati"
+    tixati.mkdir()
+    _write_settings(tixati / "settings2.dat", watched=True)
+    source = tmp_path / "torrents"
+    source.mkdir()
+    _write_torrent(source / "one.torrent")
+
+    report = migrate(
+        tixati,
+        tmp_path / "profile",
+        torrent_source=source,
+        write_settings=True,
+    )
+
+    assert report.watched_folders_path == tmp_path / "profile" / "watched_folders.json"
+    watched = json.loads(report.watched_folders_path.read_text(encoding="utf-8"))
+    assert watched["/srv/watch"]["add_torrent_params"]["use_auto_tmm"] is True
+    assert report.metadata_path == tmp_path / "profile" / "tixati-migration.json"

@@ -129,4 +129,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"settings: {report.settings_path}")
     if report.categories_path is not None:
         print(f"categories: {report.categories_path}")
+    if report.watched_folders_path is not None:
+        print(f"watched folders: {report.watched_folders_path}")
+    if report.metadata_path is not None:
+        print(f"migration metadata: {report.metadata_path}")
     return 0
