@@ -92,6 +92,7 @@ Important transfer fields include:
 | `0x11027` | bencoded info-dictionary prefix |
 | `0x11028` | bencoded info-dictionary suffix |
 | `0x1103f` | per-transfer Created/Added timestamp, type 6 `uint64` Unix seconds |
+| `0x11040` | later per-transfer activity/state-change timestamp, type 6 `uint64` Unix seconds |
 | `0x12001` | tracker URL |
 | `0x14040` | all-time downloaded bytes, including protocol overhead |
 | `0x14041` | all-time uploaded bytes, including protocol overhead |
@@ -137,9 +138,11 @@ The corresponding current qBittorrent category registry entry is:
 The generated registry uses qBittorrent's current snake-case keys. qBittorrent
 releases before 4.4 used the older `savePath` spelling, so those releases may
 need the key renamed after migration. Tixati's separate `sdloc` path and
-category seeding-policy values are retained by the reader for inspection but
-are not written to qBittorrent because their semantics do not have a safe
-one-to-one destination.
+seed-count stop control are retained by the reader for inspection but are not
+written to qBittorrent because their semantics do not have a safe one-to-one
+destination. A category ratio stop is converted to qBittorrent's per-torrent
+ratio limit, and a positive category seeding-minutes stop is converted to
+qBittorrent's per-torrent seeding-time limit.
 
 ### Reconstructing an `info` dictionary
 
@@ -207,14 +210,20 @@ torrent, the bitmap is expanded into qBittorrent's one-byte-per-piece
 `pieces` state. An absent or malformed bitmap is treated conservatively as
 unchecked pieces.
 
-## State that is intentionally not guessed
+## Activity dates and state that is intentionally not guessed
 
 The reader recognizes more data than it exports. The following values are
 currently left out because their meaning is ambiguous or qBittorrent has no
 direct equivalent:
 
 - `0x11040`, a later date-like value that appears for both complete and
-  incomplete transfers; it is not assumed to be completion time.
+  incomplete transfers. For a transfer whose validated aggregate bitmap is
+  complete, it is used as qBittorrent's completion time, last-download time,
+  and last-seen-complete time. For an incomplete transfer it is used only as
+  last-download/activity time; it is never called a completion time there.
+- Tixati does not expose a separate upload-event timestamp or an active-time
+  duration in the transfer fields currently decoded. Those qBittorrent
+  values remain zero rather than being inferred from the dates.
 - Tixati's `d_priority`, `s_priority`, `s_status`, and `tt_priority` settings;
   qBittorrent's per-file priority and stop-state fields do not have the same
   semantics.
@@ -227,9 +236,9 @@ direct equivalent:
   `0x14004`, and `0x14050`–`0x1405e`.
 
 Consequently, generated resume files leave qBittorrent-only values such as
-active time, last upload/download timestamps, tracker peer counts, and
-completion time at safe defaults. This avoids turning an observed integer into
-an incorrect user-visible date or state.
+active time, last-upload timestamp, and tracker peer counts at safe defaults.
+The activity mapping above is deliberately limited to the cases supported by
+the observed field behavior.
 
 ### Transfer dates
 
@@ -309,11 +318,12 @@ assigning a wrong meaning to an undocumented field.
 
 With `--write-settings`, compatible values are copied to the generated
 qBittorrent profile: the incoming port, default save path, port forwarding,
-DHT enablement, per-torrent connection limit, upload slots, and managed active
-download/upload limits. Explicit `--save-path` takes precedence. Tixati's
-multiple proxy scopes, encryption modes, protocol selection, disk throttles,
-and UI-only values have no sufficiently certain one-to-one qBittorrent mapping
-and are left unchanged.
+DHT enablement, per-torrent connection limit, upload slots, managed active
+download/upload limits, peer encryption preference, TCP/uTP selection, file
+allocation mode, proxy profile, and local interface. Explicit `--save-path`
+takes precedence. Tixati's disk read/write throttles and opaque bandwidth
+quota/preset databases are retained as migration metadata where possible,
+but are not silently written into qBittorrent's unrelated disk-cache controls.
 
 ## Limitations
 
@@ -335,6 +345,13 @@ and are left unchanged.
   for per-torrent overrides.
 - Hash-only/link records without embedded piece metadata are reported and
   skipped rather than turned into unverifiable torrents.
+- Tixati category ratio and time automation is applied to each generated
+  resume entry. Seed-count automation has no qBittorrent resume equivalent;
+  Tixati's `sdloc` path and unsupported automation are retained in the
+  migration metadata artifact when direct core migration can decode them.
+- Tixati tags and watched-folder paths are imported only when their serialized
+  values are present and unambiguous. The sample profiles examined so far
+  contain no persisted watched-folder path or per-transfer tag assignment.
 - v2-only `.torrent` files are rejected by the exported-metadata path because
   the generated qBittorrent layout is keyed by a v1 info hash.
 

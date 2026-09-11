@@ -12,7 +12,7 @@ CLI / Python API
         │
         └─ core2.dat ──> decrypt_core
                          └─> extract_core
-                              └─> CoreTransfer
+                              └─> CoreTransfer + CoreCategory
 
 all inputs ──> _Torrent ──> _Prepared ──> conflict check ──> atomic writes
                                                                │
@@ -39,8 +39,9 @@ The reader has four deliberate stages:
    The `pieces<N>:` suffix gives the required blob length, but the final
    association is always accepted only when `SHA1(prefix + pieces + suffix)`
    matches a `0x11009` info hash. It also reads transfer metadata, counters,
-   the `0x1103f` Created/Added timestamp, and the packed `0x1400a` piece state
-   from the same transfer region. Global category maps are scanned separately
+   the `0x1103f` Created/Added timestamp, the `0x11040` later activity
+   timestamp, and the packed `0x1400a` piece state from the same transfer
+   region. Global category maps are scanned separately
    so `d_category` can be paired with its `dlloc` path and the user-category
    registry can be emitted independently of the transfer list.
 4. `CoreTransfer.torrent_bytes` wraps the verified raw info dictionary in a
@@ -72,12 +73,14 @@ parsing it into `TixatiSettings`; unknown value types and numeric legacy keys
 are retained instead of being assigned an invented meaning.
 
 The settings reader is deliberately independent of qBittorrent output. The
-configuration writer performs the reviewed mappings: Tixati's `incport`,
-`incpath`, `incportupnp`, DHT mode, connection limit, upload slots, and managed
-active-transfer limits become qBittorrent settings. Explicit CLI arguments
-override imported values. Settings import is opt-in through `--write-settings`,
-so a normal torrent migration never unexpectedly changes a qBittorrent
-profile's global preferences.
+configuration writer performs reviewed mappings for values with compatible
+qBittorrent controls, including network encryption/protocol, allocation,
+proxy, and interface settings. Values without a safe qBittorrent equivalent
+are kept in a migration metadata artifact rather than being mapped to a
+different control by guesswork. Explicit CLI arguments override imported
+values. Settings import is opt-in through `--write-settings`, so a normal
+torrent migration never unexpectedly changes a qBittorrent profile's global
+preferences.
 
 ## `migration.py`
 
@@ -94,12 +97,14 @@ replaced with `os.replace()`.
 The generated resume state is intentionally conservative. Tixati's private
 piece-completion and path fields are interpreted only when their serialized
 shape is unambiguous. The aggregate piece bitmap is expanded into qBittorrent
-resume bytes, and a category `dlloc` becomes the default save path. The complete
-user-category map is rendered to `categories.json`; built-in Tixati status views
-are excluded. Explicit CLI paths and path maps still override those values.
-Transfers remain paused unless requested otherwise so qBittorrent can safely
-recheck the data. The transfer timestamp is passed through
-`TransferSpec.added_time` and is also applied to both generated file mtimes.
+resume bytes, and a category `dlloc` becomes the default save path. A validated
+complete bitmap plus `0x11040` supplies completion/activity dates; unknown
+duration or upload-event values stay at zero. The complete user-category map
+is rendered to `categories.json`; built-in Tixati status views are excluded.
+Explicit CLI paths and path maps still override those values. Transfers remain
+paused unless requested otherwise so qBittorrent can safely recheck the data.
+The transfer timestamp is passed through `TransferSpec.added_time` and is also
+applied to both generated file mtimes.
 
 The public `output_dir` argument is always the qBittorrent profile root. The
 writer creates `output_dir/BT_backup` for transfer pairs and, when requested,

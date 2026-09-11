@@ -48,7 +48,7 @@ def _generic_value(key: bytes, value_type: int, payload: bytes) -> bytes:
     )
 
 
-def _fixture_core() -> bytes:
+def _fixture_core(*, complete: bool = False) -> bytes:
     pieces = bytes(range(40))
     # Deliberately keep a non-canonical key order.  The real profile contains
     # one record like this, and changing the order would change its info hash.
@@ -74,12 +74,18 @@ def _fixture_core() -> bytes:
                 + struct.pack("<I", 8)
                 + b"\x02fixture",
             )
+            + _generic_value(b"seedcountstop", 3, struct.pack("<I", 1))
+            + _generic_value(
+                b"seedingratiostop", 7, struct.pack("<d", 0.01)
+            )
+            + _generic_value(b"seedingminutesstop", 4, struct.pack("<I", 60))
             + _generic_string(b"name", b"fixture-category"),
             _field(0x11009, 2, info_hash),
             _field(0x11006, 6, struct.pack("<Q", 1_590_000_000)),
             _field(0x11007, 2, b"fixture comment"),
             _field(0x11008, 2, b"fixture creator"),
             _field(0x1103F, 6, struct.pack("<Q", 1_600_000_123)),
+            _field(0x11040, 6, struct.pack("<Q", 1_600_000_456)),
             _field(0x1101E, 2, b"/old/fixture.torrent"),
             _field(0x11027, 2, prefix),
             _field(0x11028, 2, suffix),
@@ -90,7 +96,7 @@ def _fixture_core() -> bytes:
             _field(0x14043, 6, struct.pack("<Q", 2_300)),
             _field(0x14044, 6, struct.pack("<Q", 100)),
             _field(0x14045, 6, struct.pack("<Q", 200)),
-            _field(0x1400A, 13, struct.pack("<I", 2) + b"\x80"),
+            _field(0x1400A, 13, struct.pack("<I", 2) + (b"\xc0" if complete else b"\x80")),
             _generic_string(b"d_category", b"fixture-category"),
             # A hash-only record, analogous to Tixati's hash-link entries.
             _field(0x11009, 2, b"x" * 20),
@@ -116,6 +122,7 @@ def test_core_decrypts_and_reconstructs_torrent(tmp_path: Path) -> None:
     transfer = extraction.transfers[0]
     assert transfer.info_hash == hashlib.sha1(transfer.info_bytes).digest()
     assert transfer.created_time == 1_600_000_123
+    assert transfer.last_activity_time == 1_600_000_456
     assert transfer.creation_date == 1_590_000_000
     assert transfer.comment == b"fixture comment"
     assert transfer.created_by == b"fixture creator"
@@ -125,6 +132,9 @@ def test_core_decrypts_and_reconstructs_torrent(tmp_path: Path) -> None:
     assert extraction.categories[0].name == "fixture-category"
     assert extraction.categories[0].category_type == 0
     assert extraction.categories[0].save_path == "/home/fixture"
+    assert extraction.categories[0].seed_count_stop is True
+    assert extraction.categories[0].seeding_ratio_stop == 0.01
+    assert extraction.categories[0].seeding_minutes_stop == 60
     assert transfer.total_downloaded == 1_500
     assert transfer.total_uploaded == 2_500
     assert transfer.downloaded_payload == 1_400
@@ -145,7 +155,7 @@ def test_core_decrypts_and_reconstructs_torrent(tmp_path: Path) -> None:
 def test_migrate_uses_core_when_no_torrent_source_is_given(tmp_path: Path) -> None:
     tixati = tmp_path / "tixati"
     tixati.mkdir()
-    (tixati / "core2.dat").write_bytes(_fixture_core())
+    (tixati / "core2.dat").write_bytes(_fixture_core(complete=True))
     profile = tmp_path / "profile"
 
     report = migrate(tixati, profile, now=1_700_000_000)
@@ -159,9 +169,15 @@ def test_migrate_uses_core_when_no_torrent_source_is_given(tmp_path: Path) -> No
     resume = decode((destination / f"{stem}.fastresume").read_bytes())
     assert isinstance(resume, dict)
     assert resume[b"info-hash"].hex() == stem
-    assert resume[b"pieces"] == b"\x01\x00"
+    assert resume[b"pieces"] == b"\x01\x01"
     assert resume[b"paused"] == 1
     assert resume[b"added_time"] == 1_600_000_123
+    assert resume[b"completed_time"] == 1_600_000_456
+    assert resume[b"last_download"] == 1_600_000_456
+    assert resume[b"last_seen_complete"] == 1_600_000_456
+    assert resume[b"finished_time"] == 99_999_544
+    assert resume[b"qBt-ratioLimit"] == 10
+    assert resume[b"qBt-seedingTimeLimit"] == 60
     assert resume[b"qBt-category"] == b"fixture-category"
     assert resume[b"save_path"] == b"/home/fixture"
     assert resume[b"total_downloaded"] == 1_500

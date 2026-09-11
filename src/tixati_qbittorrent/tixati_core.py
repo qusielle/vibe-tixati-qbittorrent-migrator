@@ -101,6 +101,11 @@ class CoreTransfer:
     # stable while later activity timestamps change, which identifies it as
     # the value shown by Tixati's Created/Added column.
     creation_date: int | None = None
+    # Tixati records one later activity/state-change timestamp for most
+    # transfers as field 0x11040.  It is deliberately kept separate from
+    # ``created_time``: it occurs on incomplete transfers too, so it is not a
+    # universal completion timestamp.
+    last_activity_time: int | None = None
     comment: bytes | None = None
     created_by: bytes | None = None
     category: str | None = None
@@ -161,6 +166,11 @@ class CoreCategory:
     # its meaning (and whether it is a seed or secondary location) is not
     # sufficiently established to write it into qBittorrent automatically.
     secondary_path: str | None = None
+    # Category automation is serialized alongside the two locations.  These
+    # values are optional because older profiles omit disabled controls.
+    seed_count_stop: bool | None = None
+    seeding_ratio_stop: float | None = None
+    seeding_minutes_stop: int | None = None
 
 
 @dataclass(frozen=True)
@@ -254,6 +264,7 @@ def _scan_fields(plaintext: bytes) -> list[CoreField]:
         0x11027,
         0x11028,
         0x1103F,
+        0x11040,
         0x12001,
         0x14040,
         0x14041,
@@ -334,6 +345,17 @@ def _region_integer(
     for field in _region(field_index, start, end, field_id):
         if field.value_type == 6 and len(field.payload) == 8:
             return int.from_bytes(field.payload, "little")
+    return None
+
+
+def _region_float(
+    field_index: _FieldIndex, start: int, end: int, field_id: int
+) -> float | None:
+    """Read a little-endian IEEE-754 double from one transfer/category map."""
+
+    for field in _region(field_index, start, end, field_id):
+        if field.value_type == 7 and len(field.payload) == 8:
+            return struct.unpack("<d", field.payload)[0]
     return None
 
 
@@ -526,12 +548,40 @@ def _category_definitions(plaintext: bytes) -> tuple[CoreCategory, ...]:
             if secondary_entry is not None and secondary_entry[0] == 12
             else None
         )
+        seed_count_entry = entries.get(b"seedcountstop")
+        seed_count_stop = (
+            bool(int.from_bytes(seed_count_entry[1], "little"))
+            if seed_count_entry is not None
+            and seed_count_entry[0] in (3, 4, 5, 6)
+            and len(seed_count_entry[1]) in (4, 8)
+            else None
+        )
+        ratio_entry = entries.get(b"seedingratiostop")
+        if ratio_entry is not None and ratio_entry[0] == 7 and len(ratio_entry[1]) == 8:
+            seeding_ratio_stop = struct.unpack("<d", ratio_entry[1])[0]
+        elif ratio_entry is not None and ratio_entry[0] in (3, 4, 5, 6):
+            seeding_ratio_stop = float(
+                int.from_bytes(ratio_entry[1], "little")
+            )
+        else:
+            seeding_ratio_stop = None
+        minutes_entry = entries.get(b"seedingminutesstop")
+        seeding_minutes_stop = (
+            int.from_bytes(minutes_entry[1], "little")
+            if minutes_entry is not None
+            and minutes_entry[0] in (3, 4, 5, 6)
+            and len(minutes_entry[1]) in (4, 8)
+            else None
+        )
         if name:
             categories[name] = CoreCategory(
                 name=name,
                 category_type=category_type,
                 save_path=save_path,
                 secondary_path=secondary_path,
+                seed_count_stop=seed_count_stop,
+                seeding_ratio_stop=seeding_ratio_stop,
+                seeding_minutes_stop=seeding_minutes_stop,
             )
         position += len(marker)
     return tuple(categories.values())
@@ -686,6 +736,9 @@ def extract_core(
                 creation_date = _region_integer(
                     field_index, hash_field.position, next_hash, 0x11006
                 )
+                last_activity_time = _region_integer(
+                    field_index, hash_field.position, next_hash, 0x11040
+                )
                 comment = _region_bytes(
                     field_index, hash_field.position, next_hash, 0x11007
                 )
@@ -738,6 +791,7 @@ def extract_core(
                     trackers=trackers,
                     created_time=created_time,
                     creation_date=creation_date,
+                    last_activity_time=last_activity_time,
                     comment=comment,
                     created_by=created_by,
                     category=category,

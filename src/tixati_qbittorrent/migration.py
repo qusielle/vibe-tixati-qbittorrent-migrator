@@ -245,21 +245,31 @@ def _make_fastresume(
     # timestamp. Exported .torrent files and manifests normally do not, so
     # their established behavior remains to use the migration timestamp.
     added_time = spec.added_time if spec.added_time is not None else now
+    # Tixati exposes one later per-transfer activity/state-change timestamp,
+    # not separate upload and download event timestamps.  A complete torrent
+    # necessarily downloaded its final data at that time, so it is safe to
+    # use it for qB's completion and last-download fields.  For an incomplete
+    # transfer it remains useful as the last observed download/activity time;
+    # last-upload is left at zero because it cannot be distinguished from it.
+    completed_time = spec.completed_time if complete else None
+    if completed_time is not None and completed_time < 0:
+        completed_time = None
+    finished_time = (
+        max(0, now - completed_time)
+        if completed_time is not None
+        else 0
+    )
+    last_download = spec.last_download or 0
+    last_upload = spec.last_upload or 0
+    last_seen_complete = spec.last_seen_complete or 0
 
     resume: dict[bytes, BValue] = {
-        b"active_time": 0,
+        b"active_time": spec.active_time,
         b"added_time": added_time,
         b"allocation": b"sparse",
         b"apply_ip_filter": 1,
         b"auto_managed": 0 if spec.paused else 1,
-        # A complete piece bitmap proves the current content state, but it
-        # does not tell us when the torrent became complete.  In particular,
-        # Tixati's other date-like field is also present on incomplete and
-        # active transfers, so using either value here would fabricate a
-        # user-visible completion date.  Keep qBittorrent's date fields at
-        # their safe defaults until a source timestamp with proven semantics
-        # is available.
-        b"completed_time": 0,
+        b"completed_time": completed_time or 0,
         b"disable_dht": 1 if private else 0,
         b"disable_lsd": 1 if private else 0,
         b"disable_pex": 1 if private else 0,
@@ -267,12 +277,12 @@ def _make_fastresume(
         b"file-format": b"libtorrent resume file",
         b"file-version": 1,
         b"file_priority": file_priority,
-        b"finished_time": 0,
+        b"finished_time": finished_time,
         b"httpseeds": [],
         b"info-hash": torrent.info_hash,
-        b"last_download": 0,
-        b"last_seen_complete": 0,
-        b"last_upload": 0,
+        b"last_download": last_download,
+        b"last_seen_complete": last_seen_complete,
+        b"last_upload": last_upload,
         b"libtorrent-version": DEFAULT_LIBTORRENT_VERSION.encode("ascii"),
         b"max_connections": 16777215,
         b"max_uploads": 16777215,
@@ -288,15 +298,15 @@ def _make_fastresume(
         b"qBt-firstLastPiecePriority": 0,
         b"qBt-inactiveSeedingTimeLimit": -2,
         b"qBt-name": b"",
-        b"qBt-ratioLimit": -2000,
+        b"qBt-ratioLimit": spec.ratio_limit,
         b"qBt-savePath": save_path.encode("utf-8"),
         b"qBt-seedStatus": 1 if complete else 0,
-        b"qBt-seedingTimeLimit": -2,
+        b"qBt-seedingTimeLimit": spec.seeding_time_limit,
         b"qBt-stopCondition": b"None",
         b"qBt-tags": [tag.encode("utf-8") for tag in spec.tags],
         b"save_path": save_path.encode("utf-8"),
         b"seed_mode": 0,
-        b"seeding_time": 0,
+        b"seeding_time": spec.seeding_time,
         b"sequential_download": 0,
         b"share_mode": 0,
         b"stop_when_ready": 0,
@@ -693,11 +703,36 @@ def migrate(
                 value.hex() for value in direct_core_extraction.skipped_info_hashes
             )
             core_categories = direct_core_extraction.categories
+            category_by_name = {
+                definition.name: definition
+                for definition in core_categories
+            }
             core_pairs = []
             for index, item in enumerate(direct_core_extraction.transfers, start=1):
                 if progress is not None and (index == 1 or index % 250 == 0):
                     progress(f"building torrent files {index}/{len(direct_core_extraction.transfers)}")
                 torrent = _core_torrent(item)
+                transfer_category = category or item.category or ""
+                category_definition = category_by_name.get(transfer_category)
+                complete = item.piece_state is not None and all(item.piece_state)
+                ratio_limit = -2000
+                seeding_time_limit = -2
+                if category_definition is not None:
+                    if (
+                        category_definition.seeding_ratio_stop is not None
+                        and category_definition.seeding_ratio_stop > 0
+                    ):
+                        # qBittorrent stores per-torrent ratio limits in its
+                        # integer thousandths representation; -2000 means
+                        # “use the global limit”.
+                        ratio_limit = round(
+                            category_definition.seeding_ratio_stop * 1000
+                        )
+                    if (
+                        category_definition.seeding_minutes_stop is not None
+                        and category_definition.seeding_minutes_stop > 0
+                    ):
+                        seeding_time_limit = category_definition.seeding_minutes_stop
                 core_pairs.append(
                     (
                         torrent,
@@ -712,11 +747,26 @@ def migrate(
                             # An explicit CLI category is an override.  When
                             # it is empty, retain the category found in
                             # Tixati's per-transfer generic settings map.
-                            category=category or item.category or "",
+                            category=transfer_category,
                             tags=tag_tuple,
                             paused=paused,
                             content_layout=content_layout,
                             added_time=item.created_time,
+                            completed_time=(
+                                item.last_activity_time if complete else None
+                            ),
+                            last_download=(
+                                item.last_activity_time
+                                if item.last_activity_time is not None
+                                else None
+                            ),
+                            last_seen_complete=(
+                                item.last_activity_time
+                                if complete and item.last_activity_time is not None
+                                else None
+                            ),
+                            ratio_limit=ratio_limit,
+                            seeding_time_limit=seeding_time_limit,
                             total_downloaded=item.total_downloaded,
                             total_uploaded=item.total_uploaded,
                             piece_state=item.piece_state,

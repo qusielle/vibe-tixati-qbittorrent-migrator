@@ -24,6 +24,9 @@ class TransferSpec:
     qBittorrent will verify the existing files instead of trusting stale state.
     ``added_time`` is an optional Unix timestamp used for qBittorrent's
     original transfer-added date.
+    ``completed_time`` and the event timestamps are optional source-derived
+    values.  They are kept separate so an importer can leave an unknown
+    timestamp at qBittorrent's safe default instead of reusing a nearby date.
     ``total_downloaded`` and ``total_uploaded`` are all-time byte counters;
     the direct core reader fills them from Tixati's validated transfer stats.
     """
@@ -38,6 +41,14 @@ class TransferSpec:
     file_priority: tuple[int, ...] | None = None
     piece_state: tuple[int, ...] | None = None
     added_time: int | None = None
+    completed_time: int | None = None
+    active_time: int = 0
+    seeding_time: int = 0
+    last_download: int | None = None
+    last_upload: int | None = None
+    last_seen_complete: int | None = None
+    ratio_limit: int = -2000
+    seeding_time_limit: int = -2
     total_downloaded: int = 0
     total_uploaded: int = 0
 
