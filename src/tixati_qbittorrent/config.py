@@ -4,7 +4,44 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .tixati_settings import TixatiSettings
+from .tixati_settings import TixatiSetting, TixatiSettings
+
+
+_PROXY_FIELD_ID = 0x25203E0C
+
+
+def _setting_text(settings: TixatiSettings, name: str) -> str | None:
+    value = settings.get(name)
+    return value if isinstance(value, str) else None
+
+
+def _nested_text(values: dict[str, TixatiSetting], name: str) -> str | None:
+    value = values.get(name)
+    if value is None or not isinstance(value.value, str):
+        return None
+    return value.value
+
+
+def _nested_int(values: dict[str, TixatiSetting], name: str) -> int | None:
+    value = values.get(name)
+    if value is None or not isinstance(value.value, int):
+        return None
+    return value.value
+
+
+def _append_source_value(
+    lines: list[str], settings: TixatiSettings, source_name: str, target_name: str
+) -> None:
+    """Retain an unmapped source value in the self-documenting side section."""
+
+    entry = settings.get_entry(source_name)
+    if entry is None:
+        return
+    value = entry.value
+    if isinstance(value, (str, int, float)):
+        lines.append(f"{target_name}={value}")
+    elif isinstance(value, bytes):
+        lines.append(f"{target_name}Hex={value.hex()}")
 
 
 def render_qbittorrent_conf(
@@ -42,6 +79,7 @@ def render_qbittorrent_conf(
         lines.extend(("", "[BitTorrent]", f"Session\\DefaultSavePath={effective_save_path}"))
 
     session_values: list[str] = []
+    network_values: list[str] = []
     if incomplete_path:
         session_values.extend(
             (
@@ -87,6 +125,68 @@ def render_qbittorrent_conf(
                 "ulslots",
                 "Session\\MaxActiveUploads",
             )
+
+        protocol = _int_setting(tixati_settings, "peerconnproto")
+        if protocol is None:
+            protocol = _int_setting(tixati_settings, "incpeerconnproto")
+        protocol_name = {1: "TCP", 2: "uTP", 3: "Both"}.get(protocol or 0)
+        if protocol_name is not None:
+            session_values.append(f"Session\\BTProtocol={protocol_name}")
+
+        allocation = _int_setting(tixati_settings, "filealloctype")
+        if allocation in (1, 2, 3):
+            # Tixati 1 is full pre-write, 2 is fast allocation and 3 is
+            # sparse. qBittorrent exposes the same useful distinction as a
+            # preallocation boolean; it has no separate fast-allocation mode.
+            session_values.append(
+                f"Session\\Preallocation={'true' if allocation in (1, 2) else 'false'}"
+            )
+
+        encryption = _encryption_mode(tixati_settings)
+        if encryption is not None:
+            session_values.append(f"Session\\Encryption={encryption}")
+
+        interface = _setting_text(tixati_settings, "local_ip")
+        if interface:
+            # qBittorrent versions have used both names. Keeping the pair
+            # makes the generated profile useful across supported releases;
+            # an interface name such as tun0 is intentionally not treated as
+            # an IP address.
+            session_values.extend(
+                (
+                    f"Session\\Interface={interface}",
+                    f"Session\\InterfaceName={interface}",
+                )
+            )
+
+        migration_values: list[str] = []
+        for source_name, target_name in (
+            ("readthrottle_mode", "ReadThrottleMode"),
+            ("readthrottle_rate", "ReadThrottleRate"),
+            ("writethrottle_mode", "WriteThrottleMode"),
+            ("writethrottle_rate", "WriteThrottleRate"),
+            ("ipmode", "IPMode"),
+            ("local_ip", "LocalIP"),
+            ("local_ip6", "LocalIP6"),
+            ("peercryptmode", "PeerCryptMode"),
+            ("incconncryptmode", "IncomingCryptMode"),
+            ("peerconnproto", "PeerConnectionProtocol"),
+            ("incpeerconnproto", "IncomingPeerConnectionProtocol"),
+            ("filealloctype", "FileAllocationType"),
+        ):
+            _append_source_value(
+                migration_values,
+                tixati_settings,
+                source_name,
+                target_name,
+            )
+        bwquotas = tixati_settings.get_entry("bwquotas")
+        if bwquotas is not None and isinstance(bwquotas.value, bytes):
+            migration_values.append(f"BandwidthQuotasHex={bwquotas.value.hex()}")
+        if migration_values:
+            lines.extend(("", "[TixatiMigration]", *migration_values))
+
+        network_values.extend(_proxy_values(tixati_settings))
     if session_values:
         if not has_bittorrent_section:
             lines.extend(("", "[BitTorrent]"))
@@ -96,7 +196,9 @@ def render_qbittorrent_conf(
     if tixati_settings is not None:
         upnp = _int_setting(tixati_settings, "incportupnp")
         if upnp is not None:
-            lines.extend(("", "[Network]", f"PortForwardingEnabled={'true' if upnp else 'false'}"))
+            network_values.append(f"PortForwardingEnabled={'true' if upnp else 'false'}")
+        if network_values:
+            lines.extend(("", "[Network]", *network_values))
     return "\n".join(lines) + "\n"
 
 
@@ -123,6 +225,58 @@ def write_qbittorrent_conf(
 def _int_setting(settings: TixatiSettings, name: str) -> int | None:
     value = settings.get(name)
     return value if isinstance(value, int) else None
+
+
+def _encryption_mode(settings: TixatiSettings) -> int | None:
+    """Map Tixati's outgoing/incoming policy pair to qB's one policy.
+
+    In the observed v2 settings, value 1 is the unencrypted-only end of the
+    policy scale and value 3 is the encrypted-only end. qBittorrent uses
+    ``0`` for prefer encryption/allow either, ``1`` for require encryption and
+    ``2`` for disable encryption. If only one side is present, that side is
+    still useful; otherwise the conservative qB default is selected.
+    """
+
+    outgoing = _int_setting(settings, "peercryptmode")
+    incoming = _int_setting(settings, "incconncryptmode")
+    if outgoing is None and incoming is None:
+        return None
+    if outgoing == 3 or incoming == 3:
+        return 1
+    if outgoing == 1 and incoming == 1:
+        return 2
+    return 0
+
+
+def _proxy_values(settings: TixatiSettings) -> list[str]:
+    """Map Tixati's peer proxy profile to qBittorrent's BitTorrent proxy."""
+
+    values = settings.field_map(_PROXY_FIELD_ID)
+    mode = _nested_int(values, "pproxymode")
+    proxy_type = {1: "SOCKS4", 2: "SOCKS4", 3: "SOCKS5", 4: "HTTP"}.get(mode or 0)
+    address = _nested_text(values, "pproxyaddress")
+    port = _nested_text(values, "pproxyport")
+    if proxy_type is None or not address or not port:
+        return []
+    result = [
+        f"Proxy\\IP={address}",
+        f"Proxy\\Port={port}",
+        f"Proxy\\Type={proxy_type}",
+        "Proxy\\Profiles\\BitTorrent=true",
+        "Proxy\\Profiles\\RSS=false",
+        "Proxy\\Profiles\\Misc=false",
+    ]
+    login = _nested_text(values, "pproxylogin") or ""
+    password = _nested_text(values, "pproxypass") or ""
+    if login or password:
+        result.extend(
+            (
+                "Proxy\\AuthEnabled=true",
+                f"Proxy\\Username={login}",
+                f"Proxy\\Password={password}",
+            )
+        )
+    return result
 
 
 def _append_int_setting(

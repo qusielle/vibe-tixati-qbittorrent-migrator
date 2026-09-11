@@ -11,6 +11,8 @@ from tixati_qbittorrent.config import render_qbittorrent_conf
 from tixati_qbittorrent.tixati_settings import (
     SETTINGS_KEY,
     SettingsFormatError,
+    TixatiSetting,
+    TixatiSettings,
     read_settings,
 )
 
@@ -91,6 +93,56 @@ def test_qbittorrent_settings_use_tixati_defaults(tmp_path: Path) -> None:
     assert "Session\\MaxActiveUploads=100" in rendered
     assert "[Network]" in rendered
     assert "PortForwardingEnabled=true" in rendered
+
+
+def test_nested_proxy_registry_and_network_mappings() -> None:
+    def typed(value_type: int, payload: bytes) -> bytes:
+        return struct.pack("<I", len(payload) + 1) + bytes([value_type]) + payload
+
+    def pair(name: str, value_type: int, payload: bytes) -> bytes:
+        key = name.encode("utf-8")
+        return typed(2, key) + typed(value_type, payload)
+
+    proxy_map = struct.pack("<I", 6) + b"".join(
+        (
+            pair("pproxyaddress", 2, b"127.0.0.1"),
+            pair("pproxylogin", 2, b"alice"),
+            pair("pproxymode", 3, struct.pack("<I", 3)),
+            pair("pproxypass", 2, b"secret"),
+            pair("pproxyport", 2, b"12345"),
+            pair("pproxyssl", 3, struct.pack("<I", 0)),
+        )
+    )
+    proxy_list = struct.pack("<I", 1) + typed(11, proxy_map)
+    settings = TixatiSettings(
+        (
+            TixatiSetting("peercryptmode", None, 3, struct.pack("<I", 3)),
+            TixatiSetting("incconncryptmode", None, 3, struct.pack("<I", 2)),
+            TixatiSetting("peerconnproto", None, 3, struct.pack("<I", 3)),
+            TixatiSetting("filealloctype", None, 3, struct.pack("<I", 2)),
+            TixatiSetting("local_ip", None, 2, b"tun0"),
+            TixatiSetting("readthrottle_mode", None, 3, struct.pack("<I", 0)),
+            TixatiSetting("readthrottle_rate", None, 3, struct.pack("<I", 512000)),
+            TixatiSetting("writethrottle_mode", None, 3, struct.pack("<I", 0)),
+            TixatiSetting("writethrottle_rate", None, 3, struct.pack("<I", 100000)),
+            TixatiSetting(None, 0x25203E0C, 12, proxy_list),
+        )
+    )
+
+    proxy = settings.field_map(0x25203E0C)
+    assert proxy["pproxymode"].value == 3
+    assert proxy["pproxyaddress"].value == "127.0.0.1"
+
+    rendered = render_qbittorrent_conf(tixati_settings=settings)
+
+    assert "Session\\Encryption=1" in rendered
+    assert "Session\\BTProtocol=Both" in rendered
+    assert "Session\\Preallocation=true" in rendered
+    assert "Session\\Interface=tun0" in rendered
+    assert "Proxy\\Type=SOCKS5" in rendered
+    assert "Proxy\\AuthEnabled=true" in rendered
+    assert "ReadThrottleRate=512000" in rendered
+    assert "WriteThrottleRate=100000" in rendered
 
 
 def test_settings_reader_rejects_bad_integrity(tmp_path: Path) -> None:

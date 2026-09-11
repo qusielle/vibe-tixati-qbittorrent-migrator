@@ -74,6 +74,8 @@ class TixatiSetting:
             return int.from_bytes(self.payload, "little", signed=False)
         if self.value_type == 6 and len(self.payload) == 8:
             return int.from_bytes(self.payload, "little", signed=False)
+        if self.value_type == 7 and len(self.payload) == 8:
+            return struct.unpack("<d", self.payload)[0]
         return self.payload
 
 
@@ -97,6 +99,15 @@ class TixatiSettings:
                 result = entry
         return result
 
+    def get_field(self, field_id: int) -> TixatiSetting | None:
+        """Return the last numeric-keyed registry entry with ``field_id``."""
+
+        result: TixatiSetting | None = None
+        for entry in self.entries:
+            if entry.field_id == field_id:
+                result = entry
+        return result
+
     def get(self, name: str, default: object = None) -> object:
         """Return a decoded named setting or ``default``."""
 
@@ -116,6 +127,49 @@ class TixatiSettings:
         if entry is None or entry.value_type != 12:
             return None
         return _decode_path(entry.payload)
+
+    def field_map(self, field_id: int) -> dict[str, TixatiSetting]:
+        """Decode a type-12 list containing a type-11 string-keyed map.
+
+        Tixati uses this shape for a few legacy settings registries.  The
+        proxy profile is one observed example: the numeric field contains a
+        one-item list whose item is a map of ``pproxyaddress``, ``pproxymode``
+        and related keys.  Nested values are returned as normal
+        :class:`TixatiSetting` objects so callers do not need to duplicate the
+        private length/type parsing.
+
+        A malformed or differently shaped field returns an empty mapping. The
+        surrounding settings file is still valid; an unknown legacy field
+        should not make an otherwise useful migration fail.
+        """
+
+        entry = self.get_field(field_id)
+        if entry is None or entry.value_type != 12:
+            return {}
+        try:
+            items = _typed_items(entry.payload)
+        except SettingsFormatError:
+            return {}
+        result: dict[str, TixatiSetting] = {}
+        for value_type, payload in items:
+            if value_type != 11:
+                continue
+            try:
+                pairs = _map_items(payload)
+            except SettingsFormatError:
+                continue
+            for key, nested_type, nested_payload in pairs:
+                try:
+                    name = key.decode("utf-8")
+                except UnicodeDecodeError:
+                    continue
+                result[name] = TixatiSetting(
+                    name=name,
+                    field_id=None,
+                    value_type=nested_type,
+                    payload=nested_payload,
+                )
+        return result
 
 
 def decrypt_settings(path: str | Path, *, progress: Progress | None = None) -> bytes:
@@ -242,6 +296,56 @@ def _decode_path(payload: bytes) -> str | None:
     if not components or position != len(payload):
         return None
     return "/" + "/".join(components)
+
+
+def _typed_items(payload: bytes) -> list[tuple[int, bytes]]:
+    """Decode the repeated typed-value body used by a type-12 list."""
+
+    if len(payload) < 4:
+        raise SettingsFormatError("type-12 list is too short")
+    count = int.from_bytes(payload[:4], "little")
+    position = 4
+    values: list[tuple[int, bytes]] = []
+    for index in range(count):
+        value_length = _u32(payload, position, f"type-12 item {index} length")
+        value_type = _byte(payload, position + 4, f"type-12 item {index} type")
+        value_start = position + 5
+        value_end = position + 4 + value_length
+        if value_length < 1 or value_end > len(payload):
+            raise SettingsFormatError(f"type-12 item {index} is truncated")
+        values.append((value_type, payload[value_start:value_end]))
+        position = value_end
+    if position != len(payload):
+        raise SettingsFormatError("type-12 list has trailing bytes")
+    return values
+
+
+def _map_items(payload: bytes) -> list[tuple[bytes, int, bytes]]:
+    """Decode the counted typed-key map used inside a type-12 list."""
+
+    if len(payload) < 4:
+        raise SettingsFormatError("type-11 map is too short")
+    count = int.from_bytes(payload[:4], "little")
+    position = 4
+    values: list[tuple[bytes, int, bytes]] = []
+    for index in range(count):
+        key_length = _u32(payload, position, f"type-11 key {index} length")
+        key_type = _byte(payload, position + 4, f"type-11 key {index} type")
+        key_start = position + 5
+        key_end = position + 4 + key_length
+        if key_length < 1 or key_type != 2 or key_end > len(payload):
+            raise SettingsFormatError(f"type-11 key {index} is invalid")
+        value_length = _u32(payload, key_end, f"type-11 value {index} length")
+        value_type = _byte(payload, key_end + 4, f"type-11 value {index} type")
+        value_start = key_end + 5
+        value_end = key_end + 4 + value_length
+        if value_length < 1 or value_end > len(payload):
+            raise SettingsFormatError(f"type-11 value {index} is truncated")
+        values.append((payload[key_start:key_end], value_type, payload[value_start:value_end]))
+        position = value_end
+    if position != len(payload):
+        raise SettingsFormatError("type-11 map has trailing bytes")
+    return values
 
 
 def _u32(data: bytes, position: int, label: str) -> int:
